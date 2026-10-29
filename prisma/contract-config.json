@@ -1,0 +1,10 @@
+{
+  "contractAddress": "0x82d07E805F670943A3DbF74ab777eb89189c7c27",
+  "usdtAddress": "0x95856BE9c16afc9C147C034Cd6a514D730bD90Ba",
+  "chainId": 97,
+  "networkName": "BNB Smart Chain Testnet",
+  "rpcUrl": "https://data-seed-prebsc-1-s1.binance.org:8545/",
+  "blockExplorerUrl": "https://testnet.bscscan.com",
+  "updatedAt": "2026-10-29T23:16:17.720Z",
+  "description": "Dynamic Smart Contract Address Configuration stored on Database/Backend"
+}
