@@ -736,7 +736,7 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
                 if (sponsorNodeId == 0) sponsorNodeId = 1;
 
                 for (uint256 i = 0; i < count; i++) {
-                    _createAndPlaceNode(1, _user, sponsor, sponsorNodeId, false, false);
+                    _createAndPlaceAutoNode(1, _user, sponsor, sponsorNodeId, false);
                 }
 
                 emit AutoNewMainIdCreated(_user, count, totalDeduct);
@@ -766,7 +766,36 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
             if (sponsorNodeId == 0) sponsorNodeId = users[_user].sponsorMainNodeId;
             if (sponsorNodeId == 0) sponsorNodeId = 1;
 
-            _createAndPlaceNode(_currentRank, _user, sponsor, sponsorNodeId, false, true);
+            _createAndPlaceAutoNode(_currentRank, _user, sponsor, sponsorNodeId, true);
+
+            emit AutoExtraIdCreated(_user, _currentRank, totalNodesInRank[_currentRank]);
+        }
+    }
+
+    /// @notice สร้าง Auto Extra ID โดยระบุรหัสหลักต้นสังกัด (_sponsorNodeId) เพื่อให้จับคู่เฉพาะโคลนของรหัสหลักนั้น (originMainId === sponsorNodeId) เท่านั้น
+    function checkAndProcessAutoExtraIdForNode(address _user, uint8 _currentRank, uint256 _sponsorNodeId) public {
+        if (_currentRank < 2 || _currentRank > MAX_RANK) return;
+
+        uint256 vault4ToMax = 0;
+        for (uint8 r = 4; r <= MAX_RANK; r++) {
+            vault4ToMax += users[_user].upgradeVault[r];
+        }
+
+        uint8 nextRank = _currentRank < MAX_RANK ? _currentRank + 1 : MAX_RANK;
+        uint256 reservedVault = users[_user].firstNodeId[nextRank] == 0
+            ? getAccumulatedVault(_user, nextRank)
+            : 0;
+        uint256 availableDiff = vault4ToMax > reservedVault ? (vault4ToMax - reservedVault) : vault4ToMax;
+        uint256 targetPrice = rankPrice[_currentRank];
+
+        if (targetPrice > 0 && availableDiff >= targetPrice) {
+            _clearVaultsForRange(_user, 4, MAX_RANK, targetPrice);
+            uint256 originMainId = nodeOriginMainId[_currentRank][_sponsorNodeId];
+            if (originMainId == 0) originMainId = _sponsorNodeId;
+            if (originMainId == 0) originMainId = users[_user].firstNodeId[_currentRank];
+            if (originMainId == 0) originMainId = 1;
+
+            _createAndPlaceAutoNode(_currentRank, _user, _user, originMainId, true);
 
             emit AutoExtraIdCreated(_user, _currentRank, totalNodesInRank[_currentRank]);
         }
@@ -783,6 +812,9 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
         MatrixNode storage mNode = rankNodes[1][_mainNodeId];
         address nodeOwner = mNode.owner;
         require(nodeOwner != address(0), "Node has no owner");
+
+        uint256 originMainId = nodeOriginMainId[1][_mainNodeId];
+        if (originMainId == 0) originMainId = _mainNodeId;
 
         uint256 vault1To4 = 0;
         for (uint8 r = 1; r <= 4 && r <= MAX_RANK; r++) {
@@ -808,7 +840,7 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
                 }
 
                 for (uint256 i = 0; i < count; i++) {
-                    _createAndPlaceNode(1, nodeOwner, nodeOwner, _mainNodeId, false, false);
+                    _createAndPlaceAutoNode(1, nodeOwner, nodeOwner, originMainId, false);
                 }
 
                 emit AutoNewMainIdCreated(nodeOwner, count, totalDeduct);
@@ -1037,11 +1069,14 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
         uint256 parentId;
         bool isLeft;
 
-        // Extra ID, New Main ID และโคลน: ไม่ต้องนับรอบ (ไม่ต้องสลับ round) 
-        // ใช้วิธีสายงานผู้แนะนำตรง (Direct Sponsor Line): 
-        // ขั้นตอนที่ 1 (ติดตัวผู้แนะนำ) -> ขั้นตอนที่ 2 (ติดตัวโคลนล่าสุด)
-        if (_isExtraId || _isClone) {
-            (parentId, isLeft) = _findDirectAndClonePlacement(_rank, _sponsor, effectiveSponsorNodeId);
+        // แยกเงื่อนไขการวางตำแหน่ง:
+        // 1) โคลนนิ่ง (_isClone): ใช้ _findClonePlacement
+        // 2) New Auto ID / Auto Extra ID (_isExtraId): ใช้ _findAutoIdAndExtraIdPlacement (แยกฟังก์ชันเฉพาะใน _createAndPlaceAutoNode)
+        // 3) สมัครปกติ: ใช้ _findPlacementWithRound
+        if (_isClone) {
+            (parentId, isLeft) = _findClonePlacement(_rank, _sponsor, effectiveSponsorNodeId);
+        } else if (_isExtraId) {
+            (parentId, isLeft) = _findAutoIdAndExtraIdPlacement(_rank, _sponsor, effectiveSponsorNodeId);
         } else {
             uint8 round = sponsorRoundToggle[_rank][effectiveSponsorNodeId];
             (parentId, isLeft) = _findPlacementWithRound(_rank, _sponsor, effectiveSponsorNodeId, round);
@@ -1078,6 +1113,12 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
             }
             nodeOriginMainId[_rank][newNodeId] = originId;
             mainNodeLatestCloneId[_rank][originId] = newNodeId;
+        } else if (_isExtraId) {
+            uint256 originId = nodeOriginMainId[_rank][effectiveSponsorNodeId];
+            if (originId == 0) {
+                originId = effectiveSponsorNodeId;
+            }
+            nodeOriginMainId[_rank][newNodeId] = originId;
         }
         if (!_isExtraId) {
             users[_owner].latestNodeId[_rank] = newNodeId;
@@ -1094,9 +1135,133 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
         return newNodeId;
     }
 
-    /// @notice ฟังก์ชันวางตำแหน่งสำหรับ Extra ID, New Main ID และโคลน: ไม่นับรอบ (Direct Sponsor Line)
-    /// ขั้นตอนที่ 1: ติดตัวผู้แนะนำ (Primary Node) - ซ้ายว่างลงซ้าย, ขวาว่างลงขวา
+    /// @notice สร้างและวางตำแหน่งสำหรับ New Auto ID (Vault 1-4) และ Auto Extra ID (Vault 4-27) โดยเฉพาะ (แยกออกจากโคลนนิ่ง)
+    /// เงื่อนไข: จับคู่โคลนตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId) เท่านั้น ไม่นับรอบ
+    function _createAndPlaceAutoNode(
+        uint8 _rank,
+        address _owner,
+        address _sponsor,
+        uint256 _sponsorNodeId,
+        bool _isExtraId
+    ) internal returns (uint256) {
+        uint256 effectiveSponsorNodeId = _sponsorNodeId;
+        if (effectiveSponsorNodeId == 0) {
+            effectiveSponsorNodeId = users[_sponsor].firstNodeId[_rank];
+            if (effectiveSponsorNodeId == 0) {
+                effectiveSponsorNodeId = 1;
+            }
+        }
+
+        // ใช้ฟังก์ชันวางตำแหน่งเฉพาะของ New Auto ID และ Auto Extra ID (แยกจากโคลนนิ่ง)
+        (uint256 parentId, bool isLeft) = _findAutoIdAndExtraIdPlacement(_rank, _sponsor, effectiveSponsorNodeId);
+
+        uint256 newNodeId = ++totalNodesInRank[_rank];
+        rankNodes[_rank][newNodeId] = MatrixNode({
+            id: newNodeId,
+            owner: _owner,
+            directSponsor: _sponsor,
+            parentId: parentId,
+            leftChild: 0,
+            rightChild: 0,
+            isClone: false,
+            isExtraId: _isExtraId
+        });
+
+        if (isLeft) {
+            rankNodes[_rank][parentId].leftChild = newNodeId;
+        } else {
+            rankNodes[_rank][parentId].rightChild = newNodeId;
+        }
+
+        if (!_isExtraId) {
+            // New Auto ID เป็นรหัสหลักใหม่ในตัวเอง
+            nodeOriginMainId[_rank][newNodeId] = newNodeId;
+            if (users[_owner].firstNodeId[_rank] == 0) {
+                users[_owner].firstNodeId[_rank] = newNodeId;
+            }
+            users[_owner].latestNodeId[_rank] = newNodeId;
+        } else {
+            // Auto Extra ID ผูกตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId)
+            uint256 originId = nodeOriginMainId[_rank][effectiveSponsorNodeId];
+            if (originId == 0) {
+                originId = effectiveSponsorNodeId;
+            }
+            nodeOriginMainId[_rank][newNodeId] = originId;
+        }
+
+        emit NodeCreated(_rank, newNodeId, _owner, _sponsor, parentId, isLeft, false, _isExtraId);
+
+        if (isLeft) {
+            _distributeLeftChildRewards(_rank, newNodeId, parentId, _owner);
+        } else {
+            _triggerRightChildClone(_rank, parentId, _isExtraId);
+        }
+
+        return newNodeId;
+    }
+
+    /// @notice เงื่อนไขการวางตำแหน่งสำหรับ New Auto ID และ Auto Extra ID (เขียนแยกออกจากโคลนนิ่ง):
+    /// จับคู่โคลนตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId) เท่านั้น
+    /// ขั้นตอนที่ 1: ติดตัวรหัสหลักต้นสังกัด (sponsorNodeId) - ซ้ายว่างลงซ้าย, ขวาว่างลงขวา
+    /// ขั้นตอนที่ 2: จับคู่เฉพาะโคลนนิ่งที่มีรหัสหลักต้นสังกัดตรงกัน (nodeOriginMainId == sponsorNodeId เท่านั้น) - ซ้ายว่างลงซ้าย, ขวาว่างลงขวา
+    /// ขั้นตอนที่ 3: หากเต็มหมดทั้งรหัสหลักและโคลนในสังกัด ให้ค้นหาช่องว่างแบบ BFS ใต้รหัสหลักต้นสังกัดนั้น
+    function _findAutoIdAndExtraIdPlacement(uint8 _rank, address _sponsor, uint256 _sponsorNodeId) internal view returns (uint256 parentId, bool isLeft) {
+        uint256 requestedId = _sponsorNodeId;
+        if (requestedId == 0) {
+            requestedId = users[_sponsor].firstNodeId[_rank];
+        }
+        if (requestedId == 0) {
+            requestedId = 1;
+        }
+
+        // รหัสหลักต้นสังกัด (sponsorNodeId ที่แท้จริง)
+        uint256 sponsorMainId = nodeOriginMainId[_rank][requestedId];
+        if (sponsorMainId == 0) {
+            sponsorMainId = requestedId;
+        }
+
+        // ขั้นตอนที่ 1: วางติดตัวรหัสหลักต้นสังกัด (sponsorNodeId) ซ้ายก่อน ขวาตาม
+        MatrixNode storage mainNode = rankNodes[_rank][sponsorMainId];
+        if (mainNode.leftChild == 0) return (sponsorMainId, true);
+        if (mainNode.rightChild == 0) return (sponsorMainId, false);
+
+        // ขั้นตอนที่ 2: จับคู่โคลนตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId) เท่านั้น!
+        // ตรวจโคลนล่าสุดของรหัสหลักนี้ก่อน โดยต้องยืนยันว่า nodeOriginMainId == sponsorMainId
+        uint256 latestCloneId = mainNodeLatestCloneId[_rank][sponsorMainId];
+        if (
+            latestCloneId != 0 &&
+            latestCloneId != sponsorMainId &&
+            rankNodes[_rank][latestCloneId].isClone &&
+            nodeOriginMainId[_rank][latestCloneId] == sponsorMainId
+        ) {
+            MatrixNode storage latestClone = rankNodes[_rank][latestCloneId];
+            if (latestClone.leftChild == 0) return (latestCloneId, true);
+            if (latestClone.rightChild == 0) return (latestCloneId, false);
+        }
+
+        // สแกนหาโคลนนิ่งในผังที่มี originMainId === sponsorMainId เท่านั้น (ไม่ข้ามไปโคลนของรหัสหลักอื่นในกระเป๋าเดียวกัน)
+        uint256 total = totalNodesInRank[_rank];
+        for (uint256 id = 1; id <= total; id++) {
+            MatrixNode storage candidate = rankNodes[_rank][id];
+            if (!candidate.isClone) continue;
+            if (nodeOriginMainId[_rank][id] == sponsorMainId) {
+                if (candidate.leftChild == 0) return (id, true);
+                if (candidate.rightChild == 0) return (id, false);
+            }
+        }
+
+        // ขั้นตอนที่ 3: หากรหัสหลักและโคลนในสังกัด (originMainId === sponsorNodeId) เต็มหมด ให้หาช่องว่าง BFS ใต้ sponsorMainId
+        return _findFirstAvailableUnder(_rank, sponsorMainId);
+    }
+
+    /// @notice ฟังก์ชันวางตำแหน่งสำหรับโคลนนิ่ง (Clone ID - Rebirth):
+    /// ขั้นตอนที่ 1: ติดตัวรหัสหลักต้นสังกัด (originMainId) - ซ้ายว่างลงซ้าย, ขวาว่างลงขวา
     /// ขั้นตอนที่ 2: ติดตัวโคลนของรหัสหลักนั้น (mainNodeLatestCloneId) - ซ้ายโคลนว่างลงซ้ายโคลน, ขวาโคลนว่างลงขวาโคลน
+    function _findClonePlacement(uint8 _rank, address _sponsor, uint256 _sponsorNodeId) internal view returns (uint256 parentId, bool isLeft) {
+        return _findDirectAndClonePlacement(_rank, _sponsor, _sponsorNodeId);
+    }
+
+    /// @notice ฟังก์ชันวางตำแหน่งสำหรับสายงานผู้แนะนำตรง (Direct Sponsor Line - รอบ 1)
     function _findDirectAndClonePlacement(uint8 _rank, address _sponsor, uint256 _sponsorNodeId) internal view returns (uint256 parentId, bool isLeft) {
         uint256 primaryNodeId = _sponsorNodeId;
         if (primaryNodeId == 0) {
@@ -1118,7 +1283,11 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
 
         // ขั้นตอนที่ 2: ติดตัวโคลนของรหัสหลักนั้นโดยเฉพาะ (ไม่ข้ามไปโคลนของรหัสหลักอื่นในกระเป๋าเดียวกัน)
         uint256 latestCloneId = mainNodeLatestCloneId[_rank][originMainId];
-        if (latestCloneId != 0 && latestCloneId != originMainId) {
+        if (
+            latestCloneId != 0 &&
+            latestCloneId != originMainId &&
+            nodeOriginMainId[_rank][latestCloneId] == originMainId
+        ) {
             MatrixNode storage latestNode = rankNodes[_rank][latestCloneId];
             if (latestNode.leftChild == 0) return (latestCloneId, true);
             if (latestNode.rightChild == 0) return (latestCloneId, false);
@@ -1239,16 +1408,20 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
             // - แรงค์ 1-4: สะสมเข้า upgradeVault[1..4] และ nodeUpgradeVault เพื่อสร้าง New Main ID อัตโนมัติเมื่อครบ 5 USDT (rankPrice[1])
             // - แรงค์ 5+: สะสมเข้า upgradeVault เพื่อสร้าง Auto Extra ID หรือโอนส่วนเกิน
             users[parentOwner].upgradeVault[_rank] += upgradeAmount;
-            nodeUpgradeVault[_rank][_parentId] += upgradeAmount;
+            uint256 parentOriginMainId = nodeOriginMainId[_rank][_parentId];
+            if (parentOriginMainId == 0) parentOriginMainId = _parentId;
+            nodeUpgradeVault[_rank][parentOriginMainId] += upgradeAmount;
             emit RewardDistributed(_fromNodeId, _parentId, parentOwner, _rank, "UPGRADE_VAULT", upgradeAmount);
             if (_rank <= 4) {
-                checkAndProcessAutoNewMainId(parentOwner);
+                checkAndProcessAutoNewMainIdForNode(parentOriginMainId);
             } else {
-                checkAndProcessAutoExtraId(parentOwner, _rank);
+                checkAndProcessAutoExtraIdForNode(parentOwner, _rank, parentOriginMainId);
             }
         } else {
             users[parentOwner].upgradeVault[_rank] += upgradeAmount;
-            nodeUpgradeVault[_rank][_parentId] += upgradeAmount;
+            uint256 parentOriginMainId = nodeOriginMainId[_rank][_parentId];
+            if (parentOriginMainId == 0) parentOriginMainId = _parentId;
+            nodeUpgradeVault[_rank][parentOriginMainId] += upgradeAmount;
             emit RewardDistributed(_fromNodeId, _parentId, parentOwner, _rank, "UPGRADE_VAULT", upgradeAmount);
             _checkAndProcessAutoUpgrade(parentOwner, _rank, _parentId);
         }

@@ -380,6 +380,85 @@ export function findDirectSponsorOrCloneSlot(
   return { parentId: slot.parentId, isLeft: slot.isLeft, targetType: 'descendant', targetNodeId: mainNodeId };
 }
 
+/**
+ * เงื่อนไขการวางตำแหน่ง New Auto ID และ Auto Extra ID (เขียนแยกออกจากโคลนนิ่ง):
+ * จับคู่โคลนตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId) เท่านั้น!
+ *
+ * ขั้นตอนที่ 1: วางต่อติดตัวรหัสหลักต้นสังกัด (#sponsorNodeId) ซ้ายก่อน ขวาตาม
+ * ขั้นตอนที่ 2: ถ้ารหัสหลักต้นสังกัดเต็มทั้ง 2 ข้าง -> จับคู่เฉพาะโคลนนิ่งที่มีรหัสหลักต้นสังกัดตรงกัน
+ *             (node.isClone && originMainId === sponsorNodeId เท่านั้น) ซ้ายก่อน ขวาตาม
+ *             จะไม่ข้ามไปจับคู่โคลนของรหัสหลักอื่นในกระเป๋าเดียวกันเด็ดขาด
+ * ขั้นตอนที่ 3: หากรหัสหลักและโคลนในสังกัด (originMainId === sponsorNodeId) เต็มหมด -> ค้นหาช่องว่างแบบ BFS ใต้รหัสหลักนั้น
+ */
+export function findAutoIdAndExtraIdSlot(
+  rankNodes: RankNodesMap,
+  _sponsorAddress: string,
+  sponsorNodeId: number | bigint
+): { parentId: bigint; isLeft: boolean; targetType: 'main' | 'clone' | 'descendant'; originMainId: bigint } {
+  const lineageMap = buildCloneLineageMap(rankNodes);
+  const requestedId = BigInt(sponsorNodeId || 1);
+  const requestedIdStr = requestedId.toString();
+  const requestedMeta = lineageMap.get(requestedIdStr);
+
+  // ยึดรหัสหลักต้นสังกัด (originMainId === sponsorNodeId) เท่านั้น
+  const sponsorMainIdStr = requestedMeta ? requestedMeta.originMainId : requestedIdStr;
+  const sponsorMainId = BigInt(sponsorMainIdStr);
+  const mainNode = rankNodes[sponsorMainIdStr];
+
+  // ขั้นตอนที่ 1: ติดตัวรหัสหลักต้นสังกัด (sponsorMainId) ซ้ายก่อน ขวาตาม
+  if (mainNode) {
+    if (mainNode.leftChild === 0n) {
+      return { parentId: sponsorMainId, isLeft: true, targetType: 'main', originMainId: sponsorMainId };
+    }
+    if (mainNode.rightChild === 0n) {
+      return { parentId: sponsorMainId, isLeft: false, targetType: 'main', originMainId: sponsorMainId };
+    }
+  }
+
+  // ขั้นตอนที่ 2: จับคู่โคลนตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId) เท่านั้น!
+  const matchedClonesByOrigin: Array<{ id: bigint; leftChild: bigint; rightChild: bigint }> = [];
+
+  for (const node of Object.values(rankNodes)) {
+    if (!node.isClone) continue;
+    const meta = lineageMap.get(node.id.toString());
+    const nodeOrigin = meta?.originMainId || node.originMainId || '0';
+    if (nodeOrigin === sponsorMainIdStr) {
+      matchedClonesByOrigin.push({
+        id: node.id,
+        leftChild: node.leftChild,
+        rightChild: node.rightChild,
+      });
+    }
+  }
+
+  matchedClonesByOrigin.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  for (const clone of matchedClonesByOrigin) {
+    if (clone.leftChild === 0n) {
+      return { parentId: clone.id, isLeft: true, targetType: 'clone', originMainId: sponsorMainId };
+    }
+    if (clone.rightChild === 0n) {
+      return { parentId: clone.id, isLeft: false, targetType: 'clone', originMainId: sponsorMainId };
+    }
+  }
+
+  // ขั้นตอนที่ 3: หากรหัสหลักและโคลนในสังกัด (originMainId === sponsorNodeId) เต็มหมด ให้หาช่องว่าง BFS ใต้ sponsorMainId
+  const slot = findFirstAvailableUnder(rankNodes, sponsorMainId);
+  return { parentId: slot.parentId, isLeft: slot.isLeft, targetType: 'descendant', originMainId: sponsorMainId };
+}
+
+/**
+ * เงื่อนไขการวางตำแหน่งสำหรับ โคลนนิ่ง (Clone ID - Rebirth เมื่อเกิดลูกขวา):
+ * แยกฟังก์ชันออกจาก New Auto ID และ Auto Extra ID
+ */
+export function findClonePlacementSlot(
+  rankNodes: RankNodesMap,
+  sponsorAddress: string,
+  originMainNodeId: number | bigint
+): { parentId: bigint; isLeft: boolean; targetType: 'main' | 'clone' | 'descendant'; targetNodeId: bigint } {
+  return findDirectSponsorOrCloneSlot(rankNodes, sponsorAddress, originMainNodeId);
+}
+
 // --- 3. ฟังก์ชันจำลองการเกิดรหัสโคลนนิ่งอัตโนมัติ (Recursive Right-Child Rebirth Clone) ---
 function simulateRightChildCloneCascade(
   rankNodes: RankNodesMap,
@@ -414,16 +493,10 @@ function simulateRightChildCloneCascade(
     parentSponsor = parentOwner;
   }
 
-  const sponsorProfile = ownerProfiles[parentSponsor.toLowerCase()] || {
-    sponsor: ethers.ZeroAddress,
-    firstNodeId: triggerParentId,
-    latestNodeId: triggerParentId,
-  };
-
-  // โคลนนิ่งวางตามสายงานผู้แนะนำตรง (Direct Sponsor Line) โดยไม่สลับรอบ
+  // โคลนนิ่งใช้ฟังก์ชันวางตำแหน่งของโคลนนิ่งโดยเฉพาะ (แยกจาก New Auto ID / Auto Extra ID)
   const effectiveOriginNodeId = BigInt(cloneOriginMainIdStr);
 
-  const clonePlacement = findDirectSponsorOrCloneSlot(
+  const clonePlacement = findClonePlacementSlot(
     rankNodes,
     parentSponsor,
     effectiveOriginNodeId

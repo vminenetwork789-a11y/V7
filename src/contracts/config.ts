@@ -1,5 +1,10 @@
-export const DEFAULT_CONTRACT_ADDRESS = '0xf09a03DF9D6F89049dBDbCC5bFdB3D2BE3Bc5f10';
+export const DEFAULT_CONTRACT_ADDRESS = '0xA6EFa0dB2e88df1d4D05dD2741DCc0E882945F19';
 export const DEFAULT_USDT_ADDRESS = '0x95856BE9c16afc9C147C034Cd6a514D730bD90Ba';
+
+const LEGACY_CONTRACT_ADDRESSES = new Set([
+  '0xf09a03df9d6f89049dbdbcc5bfdb3d2be3bc5f10',
+  '0x82d07e805f670943a3dbf74ab777eb89189c7c27',
+]);
 
 export const CONTRACT_ADDRESS = DEFAULT_CONTRACT_ADDRESS;
 export const USDT_ADDRESS = DEFAULT_USDT_ADDRESS;
@@ -11,6 +16,10 @@ export function getDynamicContractAddress(): string {
   if (typeof window !== 'undefined') {
     const custom = localStorage.getItem('F27_ACTIVE_CONTRACT_ADDRESS');
     if (custom && custom.startsWith('0x') && custom.length === 42) {
+      if (LEGACY_CONTRACT_ADDRESSES.has(custom.toLowerCase())) {
+        localStorage.setItem('F27_ACTIVE_CONTRACT_ADDRESS', DEFAULT_CONTRACT_ADDRESS);
+        return DEFAULT_CONTRACT_ADDRESS;
+      }
       return custom;
     }
   }
@@ -78,7 +87,7 @@ export const SUPPORTED_NETWORKS: Record<number, NetworkConfig> = {
     rpcUrls: ['https://data-seed-prebsc-1-s1.binance.org:8545/', 'https://bsc-testnet.publicnode.com'],
     blockExplorerUrl: 'https://testnet.bscscan.com',
     defaultUsdtAddress: '0x95856BE9c16afc9C147C034Cd6a514D730bD90Ba',
-    defaultContractAddress: '0x82d07E805F670943A3DbF74ab777eb89189c7c27',
+    defaultContractAddress: '0xA6EFa0dB2e88df1d4D05dD2741DCc0E882945F19',
   },
   80002: {
     chainId: 80002,

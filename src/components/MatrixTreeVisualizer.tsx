@@ -1957,7 +1957,7 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
               <span>🌳 ผังต้นไม้ไบนารี่ 27 Ranks & รายละเอียดผลประโยชน์สะสม</span>
             </h2>
             <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-mono">
-              Contract: {CONTRACT_ADDRESS.slice(0, 6)}...{CONTRACT_ADDRESS.slice(-4)}
+              Contract: {(contractAddress || CONTRACT_ADDRESS).slice(0, 6)}...{(contractAddress || CONTRACT_ADDRESS).slice(-4)}
             </span>
             {justUpdatedBadge && (
               <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-200 border border-emerald-400 font-semibold flex items-center gap-1.5 animate-pulse">

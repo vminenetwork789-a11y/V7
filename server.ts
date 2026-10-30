@@ -33,7 +33,7 @@ const PORT = 3000;
 const CONFIG_FILE_PATH = path.resolve(__dirname, 'prisma/contract-config.json');
 
 const DEFAULT_SYSTEM_CONFIG = {
-  contractAddress: process.env.OVERRIDE_CONTRACT_ADDRESS || '0xf09a03DF9D6F89049dBDbCC5bFdB3D2BE3Bc5f10',
+  contractAddress: process.env.OVERRIDE_CONTRACT_ADDRESS || '0xA6EFa0dB2e88df1d4D05dD2741DCc0E882945F19',
   usdtAddress: process.env.USDT_ADDRESS || '0x95856BE9c16afc9C147C034Cd6a514D730bD90Ba',
   chainId: 97,
   networkName: 'BNB Smart Chain Testnet',
@@ -940,6 +940,56 @@ function calculateQueueSlot(
   // 3. หากโหนดหลัก #targetMainIdStr และโคลนของ #targetMainIdStr เต็มหมด ให้หาช่องว่างใต้ #targetMainIdStr
   const slot = bfsFindNextVacant(nodesMap, targetMainIdStr);
   return { targetParentId: slot.parentId, isLeft: slot.isLeft, activeRound: 0, targetType: 'descendant' };
+}
+
+/**
+ * เงื่อนไขการวางตำแหน่ง New Auto ID และ Auto Extra ID (เขียนแยกออกจากโคลนนิ่ง):
+ * จับคู่โคลนตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId) เท่านั้น
+ */
+export function calculateAutoIdAndExtraIdSlot(
+  nodesMap: Map<string, SimulatedQueueNode>,
+  sponsorNodeId: number
+): { targetParentId: string; isLeft: boolean; originMainId: string; targetType: 'main' | 'clone' | 'descendant' } {
+  const lineageMap = buildServerCloneLineageMap(nodesMap);
+  const requestedStrId = String(sponsorNodeId || 1);
+  const requestedMeta = lineageMap.get(requestedStrId);
+  const sponsorMainIdStr = requestedMeta ? requestedMeta.originMainId : requestedStrId;
+
+  // ขั้นตอนที่ 1: ติดตัวรหัสหลักต้นสังกัด (sponsorNodeId) ซ้ายก่อน ขวาตาม
+  const mainNode = nodesMap.get(sponsorMainIdStr);
+  if (mainNode) {
+    if (mainNode.leftChild === '0' || !mainNode.leftChild) {
+      return { targetParentId: mainNode.id, isLeft: true, originMainId: sponsorMainIdStr, targetType: 'main' };
+    }
+    if (mainNode.rightChild === '0' || !mainNode.rightChild) {
+      return { targetParentId: mainNode.id, isLeft: false, originMainId: sponsorMainIdStr, targetType: 'main' };
+    }
+  }
+
+  // ขั้นตอนที่ 2: จับคู่โคลนตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId) เท่านั้น!
+  const matchedClones: SimulatedQueueNode[] = [];
+  for (const node of nodesMap.values()) {
+    if (!node.isClone) continue;
+    const meta = lineageMap.get(node.id);
+    if (meta && meta.originMainId === sponsorMainIdStr) {
+      matchedClones.push(node);
+    }
+  }
+
+  matchedClones.sort((a, b) => Number(a.id) - Number(b.id));
+
+  for (const clone of matchedClones) {
+    if (clone.leftChild === '0' || !clone.leftChild) {
+      return { targetParentId: clone.id, isLeft: true, originMainId: sponsorMainIdStr, targetType: 'clone' };
+    }
+    if (clone.rightChild === '0' || !clone.rightChild) {
+      return { targetParentId: clone.id, isLeft: false, originMainId: sponsorMainIdStr, targetType: 'clone' };
+    }
+  }
+
+  // ขั้นตอนที่ 3: หากรหัสหลักและโคลนในสังกัด (originMainId === sponsorNodeId) เต็มหมด ให้หาช่องว่าง BFS ใต้ sponsorMainIdStr
+  const slot = bfsFindNextVacant(nodesMap, sponsorMainIdStr);
+  return { targetParentId: slot.parentId, isLeft: slot.isLeft, originMainId: sponsorMainIdStr, targetType: 'descendant' };
 }
 
 async function processPlacementJob(jobData: QueueReserveRequest): Promise<PositionReservation> {

@@ -26,7 +26,7 @@ import {
   WalletNodeDetail,
   previewOffChainSimulation,
 } from '../utils/offChainSimulator';
-import { CONTRACT_ADDRESS, USDT_ADDRESS } from '../contracts/config';
+import { CONTRACT_ADDRESS, USDT_ADDRESS, getDynamicContractAddress } from '../contracts/config';
 import { QueueStatusData } from '../types';
 
 interface RegisterSectionProps {
@@ -209,7 +209,7 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
 
         const sim = await previewOffChainSimulation(
           null,
-          CONTRACT_ADDRESS,
+          getDynamicContractAddress() || CONTRACT_ADDRESS,
           effectiveSponsorId,
           queue,
           undefined,
@@ -977,13 +977,23 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
                 ? 'เนื่องจาก Worker จะประมวลผลคำขอตามลำดับคิว (FIFO - First In, First Out) ทำให้การคำนวณตำแหน่ง Parent ID และซ้าย/ขวา แม่นยำ 100% ไม่มีทางที่ผู้ใช้สองคนจะได้ตำแหน่งทับกัน'
                 : 'Worker processes placement requests sequentially (FIFO - First In, First Out) with atomic lease locks. Zero collision on Parent ID & child branches.'}
             </p>
-            <div className="pt-1.5 border-t border-indigo-500/20 flex items-center gap-1.5 text-emerald-300 font-semibold text-[10.5px]">
-              <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
-              <span>
-                {language === 'th'
-                  ? `เงื่อนไขหาตำแหน่งสมัคร: ต่อติดตัวผู้แนะนำตรง #${sponsorNodeId} (ซ้ายก่อนขวา) หากเต็มจะไล่ตรวจติดตัวโคลนล่าสุดของผู้แนะนำตรง (ซ้ายก่อนขวา)`
-                  : `Placement Rule: Direct Sponsor #${sponsorNodeId} children first (Left then Right). If full, checks Direct Sponsor's latest clone nodes.`}
-              </span>
+            <div className="pt-1.5 border-t border-indigo-500/20 space-y-1 text-[10.5px]">
+              <div className="flex items-center gap-1.5 text-emerald-300 font-semibold">
+                <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                <span>
+                  {language === 'th'
+                    ? `เงื่อนไขหาตำแหน่งสมัคร & โคลนนิ่ง: ต่อติดตัวผู้แนะนำตรง #${sponsorNodeId} (ซ้ายก่อนขวา) หากเต็มจะไล่ตรวจติดตัวโคลนของรหัสหลัก #${sponsorNodeId} (ซ้ายก่อนขวา)`
+                    : `Registration & Clone Rule: Direct Sponsor #${sponsorNodeId} children first (Left then Right). If full, checks clones of #${sponsorNodeId}.`}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 text-amber-300 font-semibold">
+                <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />
+                <span>
+                  {language === 'th'
+                    ? `เงื่อนไข New Auto ID และ Auto Extra ID (แยกจากโคลนนิ่ง): จับคู่โคลนตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId) เท่านั้น`
+                    : `New Auto ID & Auto Extra ID Rule (Separated from Clone): Match clones strictly by Origin Main ID (originMainId === sponsorNodeId) only.`}
+                </span>
+              </div>
             </div>
           </div>
 
