@@ -482,20 +482,24 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
                   </span>
                   {myCloneNodes.map((n) => {
                     const isSelected = Number(n.id) === sponsorNodeId;
+                    const belongToSelectedMain =
+                      n.originMainId && Number(n.originMainId) === sponsorNodeId;
+                    const cloneBadge = n.originMainId
+                      ? `#${n.originMainId} #${n.id} #${n.subCloneDepth ?? 0} รอบ ${n.cloneRound || 1}`
+                      : `#${n.id} (โคลน)`;
                     return (
                       <button
                         key={n.id}
                         type="button"
-                        onClick={() => selectSponsorId(n.id)}
+                        onClick={() => selectSponsorId(n.originMainId || n.id)}
                         className={`px-2.5 py-1 rounded-lg font-mono text-xs font-bold transition cursor-pointer flex items-center gap-1 border ${
-                          isSelected
+                          isSelected || belongToSelectedMain
                             ? 'bg-emerald-500 text-slate-950 border-emerald-300 shadow-md'
                             : 'bg-slate-950 hover:bg-slate-800 text-emerald-300 border-emerald-500/40'
                         }`}
-                        title={`โคลน #${n.id} (Parent #${n.parentId})`}
+                        title={`โคลน (${cloneBadge}) | รหัสหลัก #${n.originMainId || n.id} | Parent #${n.parentId}`}
                       >
-                        <span>#{n.id}</span>
-                        <span className="text-[10px] opacity-80">(โคลน)</span>
+                        <span>({cloneBadge})</span>
                       </button>
                     );
                   })}
@@ -753,22 +757,37 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
                   )}
                 </span>
 
-                {placementPreview && (
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-amber-300 bg-amber-500/15 px-2.5 py-1 rounded-lg border border-amber-500/40 font-bold flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                      <span>
-                        ตำแหน่งที่จะลง (ออโต้): Parent #{placementPreview.targetParentId} (
-                        {placementPreview.isLeft ? 'LEFT ลูกซ้าย' : 'RIGHT ลูกขวา'})
-                      </span>
-                    </span>
-                    {placementPreview.assignedNodeId && (
-                      <span className="text-emerald-200 bg-emerald-500/20 px-2 py-1 rounded-lg border border-emerald-500/40 font-bold">
-                        ได้รหัสใหม่ #{placementPreview.assignedNodeId}
-                      </span>
-                    )}
-                  </div>
-                )}
+                {placementPreview &&
+                  (() => {
+                    const targetParentNode = allOnChainNodes.find(
+                      (n) => n.id === String(placementPreview.targetParentId)
+                    );
+                    const cloneLabel =
+                      targetParentNode && targetParentNode.isClone
+                        ? ` [โคลนนิ่ง (#${targetParentNode.originMainId || sponsorNodeId} #${
+                            targetParentNode.id
+                          } #${targetParentNode.subCloneDepth ?? 0} รอบ ${
+                            targetParentNode.cloneRound || 1
+                          })]`
+                        : '';
+                    return (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-amber-300 bg-amber-500/15 px-2.5 py-1 rounded-lg border border-amber-500/40 font-bold flex items-center gap-1.5">
+                          <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                          <span>
+                            ตำแหน่งที่จะลง (ออโต้): Parent #{placementPreview.targetParentId}
+                            {cloneLabel} ({placementPreview.isLeft ? 'LEFT ลูกซ้าย' : 'RIGHT ลูกขวา'}
+                            )
+                          </span>
+                        </span>
+                        {placementPreview.assignedNodeId && (
+                          <span className="text-emerald-200 bg-emerald-500/20 px-2 py-1 rounded-lg border border-emerald-500/40 font-bold">
+                            ได้รหัสใหม่ #{placementPreview.assignedNodeId}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
               </div>
 
               {/* Fetched Sponsor Node & Wallet Information Box */}
@@ -833,12 +852,25 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
                       ID ทั้งหมดในกระเป๋าใบนี้ ({sponsorWalletOwnedNodes.length} รหัส):
                     </span>
                     {sponsorWalletOwnedNodes.map((nodeItem) => {
-                      const active = Number(nodeItem.id) === sponsorNodeId;
+                      const active =
+                        Number(nodeItem.id) === sponsorNodeId ||
+                        (nodeItem.isClone && Number(nodeItem.originMainId) === sponsorNodeId);
+                      const label = nodeItem.isClone
+                        ? `(#${nodeItem.originMainId || nodeItem.id} #${nodeItem.id} #${
+                            nodeItem.subCloneDepth ?? 0
+                          } รอบ ${nodeItem.cloneRound || 1})`
+                        : `#${nodeItem.id} (หลัก)`;
                       return (
                         <button
                           key={nodeItem.id}
                           type="button"
-                          onClick={() => selectSponsorId(nodeItem.id)}
+                          onClick={() =>
+                            selectSponsorId(
+                              nodeItem.isClone
+                                ? nodeItem.originMainId || nodeItem.id
+                                : nodeItem.id
+                            )
+                          }
                           className={`px-2 py-0.5 rounded font-mono text-[11px] font-bold transition cursor-pointer border ${
                             active
                               ? 'bg-emerald-500 text-slate-950 border-emerald-300'
@@ -846,9 +878,13 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
                               ? 'bg-slate-900 hover:bg-slate-800 text-emerald-300 border-emerald-500/30'
                               : 'bg-slate-900 hover:bg-slate-800 text-amber-300 border-amber-500/30'
                           }`}
-                          title={`คลิกเพื่อเปลี่ยนเป็น Node #${nodeItem.id}`}
+                          title={
+                            nodeItem.isClone
+                              ? `โคลนของรหัสหลัก #${nodeItem.originMainId || nodeItem.id} (Node #${nodeItem.id})`
+                              : `คลิกเพื่อใช้รหัสหลัก #${nodeItem.id}`
+                          }
                         >
-                          #{nodeItem.id} {nodeItem.isClone ? '(โคลน)' : '(หลัก)'}
+                          {label}
                         </button>
                       );
                     })}

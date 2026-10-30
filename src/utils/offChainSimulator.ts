@@ -17,6 +17,7 @@ export interface InMemoryMatrixNode {
   leftChild: bigint;
   rightChild: bigint;
   isClone: boolean;
+  originMainId?: string;
 }
 
 export interface WalletNodeDetail {
@@ -27,6 +28,19 @@ export interface WalletNodeDetail {
   leftChild: string;
   rightChild: string;
   isClone: boolean;
+  originMainId?: string;
+  spawnedFromNodeId?: string;
+  cloneRound?: number;
+  subCloneDepth?: number;
+}
+
+export interface CloneLineageMeta {
+  nodeId: string;
+  isClone: boolean;
+  originMainId: string;
+  spawnedFromNodeId: string;
+  cloneRound: number;
+  subCloneDepth: number;
 }
 
 export type RankNodesMap = Record<string, InMemoryMatrixNode>;
@@ -159,20 +173,170 @@ export function simulateSinglePlacement(
 }
 
 /**
+ * คำนวณสายตระกูลโคลนนิ่ง (Clone Lineage: originMainId / รหัสหลักต้นสังกัด)
+ * โดยตรวจสอบว่าลูกขวา (Right Child) ของโหนดใดเป็นตัวจุดชนวนให้เกิดโคลนนั้นๆ
+ * ทำให้แยกได้อย่างแม่นยำว่า โคลน #8 เป็นของรหัสหลัก #2 (#2 #8 #0 รอบ 1)
+ * และ โคลน #24 เป็นของรหัสหลัก #6 (#6 #24 #0 รอบ 1) แม้จะอยู่ในกระเป๋าเดียวกัน
+ */
+export function buildCloneLineageMap(
+  rankNodes: RankNodesMap
+): Map<string, CloneLineageMeta> {
+  const lineageMap = new Map<string, CloneLineageMeta>();
+  const matchedRightTriggers = new Set<string>();
+  const ownerPrimaryNodeMap = new Map<string, string>();
+  const ownerAllMainNodesMap = new Map<string, string[]>();
+  const mainNodeCloneRoundCount = new Map<string, number>();
+
+  const sortedIds = Object.keys(rankNodes)
+    .map((k) => Number(k))
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .sort((a, b) => a - b);
+
+  const isAncestorOf = (candidateAncestorId: string, targetId: string): boolean => {
+    if (!candidateAncestorId || candidateAncestorId === '0' || !targetId || targetId === '0') {
+      return false;
+    }
+    let curr = targetId;
+    const guard = new Set<string>();
+    while (curr && curr !== '0' && !guard.has(curr)) {
+      if (curr === candidateAncestorId) return true;
+      guard.add(curr);
+      const p = rankNodes[curr];
+      curr = p ? p.parentId.toString() : '0';
+    }
+    return false;
+  };
+
+  for (const numId of sortedIds) {
+    const idStr = String(numId);
+    const n = rankNodes[idStr];
+    if (!n) continue;
+    const ownerKey = (n.owner || '').toLowerCase();
+
+    if (!n.isClone) {
+      if (!ownerPrimaryNodeMap.has(ownerKey)) {
+        ownerPrimaryNodeMap.set(ownerKey, idStr);
+      }
+      const list = ownerAllMainNodesMap.get(ownerKey) || [];
+      list.push(idStr);
+      ownerAllMainNodesMap.set(ownerKey, list);
+
+      lineageMap.set(idStr, {
+        nodeId: idStr,
+        isClone: false,
+        originMainId: idStr,
+        spawnedFromNodeId: '0',
+        cloneRound: 0,
+        subCloneDepth: 0,
+      });
+    } else {
+      let spawnedFromNodeId = '0';
+      const walletFirstId = ownerPrimaryNodeMap.get(ownerKey) || idStr;
+
+      if (n.originMainId && n.originMainId !== '0') {
+        const originId = n.originMainId;
+        const prevCount = mainNodeCloneRoundCount.get(originId) || 0;
+        const currentCount = prevCount + 1;
+        mainNodeCloneRoundCount.set(originId, currentCount);
+        const cloneRound = ((currentCount - 1) % 2) + 1;
+        lineageMap.set(idStr, {
+          nodeId: idStr,
+          isClone: true,
+          originMainId: originId,
+          spawnedFromNodeId: originId,
+          cloneRound,
+          subCloneDepth: 0,
+        });
+        continue;
+      }
+
+      // ตรวจย้อนหลังจาก id - 1 ลงไปหาโหนดที่ลูกขวาเต็มแล้วทำให้เกิดโคลนนี้
+      for (let lookback = numId - 1; lookback >= 1; lookback--) {
+        const candidateRightChild = rankNodes[String(lookback)];
+        if (!candidateRightChild || candidateRightChild.parentId <= 0n) continue;
+        const triggerParentIdStr = candidateRightChild.parentId.toString();
+        const triggerParent = rankNodes[triggerParentIdStr];
+        if (
+          triggerParent &&
+          triggerParent.rightChild === candidateRightChild.id &&
+          (triggerParent.owner || '').toLowerCase() === ownerKey &&
+          !matchedRightTriggers.has(triggerParentIdStr)
+        ) {
+          spawnedFromNodeId = triggerParentIdStr;
+          matchedRightTriggers.add(triggerParentIdStr);
+          break;
+        }
+      }
+
+      if (spawnedFromNodeId === '0') {
+        const ownerMains = ownerAllMainNodesMap.get(ownerKey) || [];
+        const matchingSubtreeMain = [...ownerMains]
+          .reverse()
+          .find((mId) => Number(mId) < numId && isAncestorOf(mId, idStr));
+        spawnedFromNodeId = matchingSubtreeMain || walletFirstId;
+      }
+
+      const triggerMeta = lineageMap.get(spawnedFromNodeId);
+      let originMainId = spawnedFromNodeId;
+      let subCloneDepth = 0;
+
+      if (triggerMeta) {
+        originMainId = triggerMeta.isClone ? triggerMeta.originMainId : triggerMeta.nodeId;
+        subCloneDepth = triggerMeta.isClone ? triggerMeta.subCloneDepth + 1 : 0;
+      }
+
+      const prevCount = mainNodeCloneRoundCount.get(originMainId) || 0;
+      const currentCount = prevCount + 1;
+      mainNodeCloneRoundCount.set(originMainId, currentCount);
+      const cloneRound = ((currentCount - 1) % 2) + 1;
+
+      lineageMap.set(idStr, {
+        nodeId: idStr,
+        isClone: true,
+        originMainId,
+        spawnedFromNodeId,
+        cloneRound,
+        subCloneDepth,
+      });
+    }
+  }
+
+  return lineageMap;
+}
+
+/**
  * เงื่อนไขสำหรับหาตำแหน่ง สมัครสมาชิก:
- * 1. จะต้องไปต่อติดตัวของผู้แนะนำตรง Direct Sponsor (ซ้ายก่อน ขวาตาม)
- * 2. แต่ถ้าผู้แนะนำตรง Direct Sponsor ไม่มีช่องว่าง (เต็มทั้ง 2 ข้าง) -> ให้ไปวางต่อติดตัวโคลนนิ่งของ Direct Sponsor เท่านั้น (ซ้ายก่อน ขวาตาม)
+ * 1. จะต้องไปต่อติดตัวของผู้แนะนำตรง Direct Sponsor (#sponsorNodeId) ซ้ายก่อน ขวาตาม
+ * 2. แต่ถ้าผู้แนะนำตรง (#sponsorNodeId) เต็มทั้ง 2 ข้าง -> ให้ไปวางต่อติดตัวโคลนนิ่งที่เป็นของรหัสหลัก #sponsorNodeId นั้นโดยเฉพาะ (originMainId === sponsorNodeId) ซ้ายก่อน ขวาตาม
+ *    เช่น กรอกผู้แนะนำ 2 -> ต้องไปต่อโคลนของ #2 คือ (#2 #8 #0 รอบ 1) เท่านั้น จะไม่ข้ามไปโคลนของ #6 (#6 #24 #0 รอบ 1)
  */
 export function findDirectSponsorOrCloneSlot(
   rankNodes: RankNodesMap,
-  sponsorAddress: string,
+  _sponsorAddress: string,
   sponsorNodeId: number | bigint
 ): { parentId: bigint; isLeft: boolean; targetType: 'main' | 'clone' | 'descendant'; targetNodeId: bigint } {
-  const sponsorKey = (sponsorAddress || '').toLowerCase();
-  const mainNodeId = BigInt(sponsorNodeId || 1);
-  const mainNode = rankNodes[mainNodeId.toString()];
+  const lineageMap = buildCloneLineageMap(rankNodes);
+  const requestedId = BigInt(sponsorNodeId || 1);
+  const requestedIdStr = requestedId.toString();
+  const requestedNode = rankNodes[requestedIdStr];
+  const requestedMeta = lineageMap.get(requestedIdStr);
 
-  // 1. ต่อติดตัวของผู้แนะนำตรง Direct Sponsor (ซ้ายก่อน ขวาตาม)
+  // หากระบุเป็นรหัสโคลนโดยตรง ให้ตรวจช่องว่างของโคลนนั้นก่อน
+  if (requestedNode && requestedNode.isClone) {
+    if (requestedNode.leftChild === 0n) {
+      return { parentId: requestedId, isLeft: true, targetType: 'clone', targetNodeId: requestedId };
+    }
+    if (requestedNode.rightChild === 0n) {
+      return { parentId: requestedId, isLeft: false, targetType: 'clone', targetNodeId: requestedId };
+    }
+  }
+
+  // รหัสหลักเป้าหมาย (เช่น #2)
+  const targetMainIdStr = requestedMeta ? requestedMeta.originMainId : requestedIdStr;
+  const mainNodeId = BigInt(targetMainIdStr);
+  const mainNode = rankNodes[targetMainIdStr];
+
+  // ขั้นตอนที่ 1: ต่อติดตัวของผู้แนะนำตรง Direct Sponsor (#mainNodeId) ซ้ายก่อน ขวาตาม
   if (mainNode) {
     if (mainNode.leftChild === 0n) {
       return { parentId: mainNodeId, isLeft: true, targetType: 'main', targetNodeId: mainNodeId };
@@ -182,50 +346,27 @@ export function findDirectSponsorOrCloneSlot(
     }
   }
 
-  // Helper: ตรวจสอบว่า nodeId อยู่ใต้สายงาน (subtree) ของ rootId หรือไม่
-  const isNodeInSubtree = (targetId: bigint, rootId: bigint): boolean => {
-    let curr = targetId;
-    let hops = 0;
-    while (curr > 0n && hops < 64) {
-      if (curr === rootId) return true;
-      const n = rankNodes[curr.toString()];
-      if (!n) break;
-      curr = n.parentId;
-      hops++;
-    }
-    return false;
-  };
-
-  // 2. ตรวจสอบโคลนล่าสุดของผู้แนะนำตรง โดยให้ความสำคัญกับโคลนที่อยู่ในสายของ Main ID (#mainNodeId) นั้นก่อน
-  const subtreeClones: Array<{ id: bigint; leftChild: bigint; rightChild: bigint }> = [];
-  const allWalletClones: Array<{ id: bigint; leftChild: bigint; rightChild: bigint }> = [];
+  // ขั้นตอนที่ 2: ตรวจสอบเฉพาะโคลนนิ่งที่มีรหัสหลัก (originMainId) ตรงกับ #mainNodeId เท่านั้น!
+  // เช่น ผู้แนะนำ #2 -> ดึงเฉพาะโคลนที่มี originMainId === '2' (เช่น #8 [#2 #8 #0 รอบ 1]) ไม่ดึง #24 ที่เป็นของ #6
+  const clonesOfThisMainId: Array<{ id: bigint; leftChild: bigint; rightChild: bigint }> = [];
 
   for (const node of Object.values(rankNodes)) {
-    if (
-      node.isClone &&
-      node.owner &&
-      node.owner.toLowerCase() === sponsorKey
-    ) {
-      const item = {
+    if (!node.isClone) continue;
+    const meta = lineageMap.get(node.id.toString());
+    if (meta && meta.originMainId === targetMainIdStr) {
+      clonesOfThisMainId.push({
         id: node.id,
         leftChild: node.leftChild,
         rightChild: node.rightChild,
-      };
-      if (isNodeInSubtree(node.id, mainNodeId)) {
-        subtreeClones.push(item);
-      }
-      allWalletClones.push(item);
+      });
     }
   }
 
-  subtreeClones.sort((a, b) => (a.id > b.id ? -1 : a.id < b.id ? 1 : 0));
-  allWalletClones.sort((a, b) => (a.id > b.id ? -1 : a.id < b.id ? 1 : 0));
+  // เรียงลำดับโคลนของรหัสหลักนี้เพื่อหาโคลนที่ยังมีช่องว่างซ้ายหรือขวา (เช่น #8 ที่ซ้ายเต็มแต่ขวาว่าง)
+  clonesOfThisMainId.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
-  const sponsorClones = subtreeClones.length > 0 ? subtreeClones : allWalletClones;
-
-  if (sponsorClones.length > 0) {
-    // หาโคลนที่มีช่องว่างซ้ายหรือขวาติดตัวก่อน
-    const openClone = sponsorClones.find((c) => c.leftChild === 0n || c.rightChild === 0n);
+  if (clonesOfThisMainId.length > 0) {
+    const openClone = clonesOfThisMainId.find((c) => c.leftChild === 0n || c.rightChild === 0n);
     if (openClone) {
       if (openClone.leftChild === 0n) {
         return { parentId: openClone.id, isLeft: true, targetType: 'clone', targetNodeId: openClone.id };
@@ -234,7 +375,7 @@ export function findDirectSponsorOrCloneSlot(
     }
   }
 
-  // 3. หากโหนดหลักและโคลนติดตัวเต็มหมด ให้หาช่องว่างแบบ BFS ใต้โหนดหลัก (#mainNodeId) ที่เลือกไว้โดยตรง
+  // ขั้นตอนที่ 3: หากโหนดหลัก #mainNodeId และโคลนของ #mainNodeId เต็มหมด ให้หาช่องว่างแบบ BFS ใต้ #mainNodeId
   const slot = findFirstAvailableUnder(rankNodes, mainNodeId);
   return { parentId: slot.parentId, isLeft: slot.isLeft, targetType: 'descendant', targetNodeId: mainNodeId };
 }
@@ -251,6 +392,12 @@ function simulateRightChildCloneCascade(
   if (depth > 16) return; // Safety guard
   const parentNode = rankNodes[triggerParentId.toString()];
   if (!parentNode) return;
+
+  const lineageMap = buildCloneLineageMap(rankNodes);
+  const triggerMeta = lineageMap.get(triggerParentId.toString());
+  const cloneOriginMainIdStr = triggerMeta
+    ? triggerMeta.originMainId
+    : parentNode.originMainId || triggerParentId.toString();
 
   const parentOwner = parentNode.owner;
   const parentOwnerKey = parentOwner.toLowerCase();
@@ -273,18 +420,13 @@ function simulateRightChildCloneCascade(
     latestNodeId: triggerParentId,
   };
 
-  const usedRound = state.currentToggle;
-  state.currentToggle = usedRound === 0 ? 1 : 0;
+  // โคลนนิ่งวางตามสายงานผู้แนะนำตรง (Direct Sponsor Line) โดยไม่สลับรอบ
+  const effectiveOriginNodeId = BigInt(cloneOriginMainIdStr);
 
-  // ใช้ triggerParentId เป็นรหัสหลักต้นทางเมื่อเกิดโคลนจากลูกขวาของ New Main ID นั้น
-  const effectiveOriginNodeId = !parentNode.isClone ? triggerParentId : sponsorProfile.firstNodeId;
-
-  const clonePlacement = simulateSinglePlacement(
+  const clonePlacement = findDirectSponsorOrCloneSlot(
     rankNodes,
     parentSponsor,
-    effectiveOriginNodeId,
-    sponsorProfile.latestNodeId,
-    usedRound
+    effectiveOriginNodeId
   );
 
   state.nextNodeId += 1n;
@@ -299,6 +441,7 @@ function simulateRightChildCloneCascade(
     leftChild: 0n,
     rightChild: 0n,
     isClone: true,
+    originMainId: cloneOriginMainIdStr,
   };
 
   const targetParentNode = rankNodes[clonePlacement.parentId.toString()];
@@ -575,18 +718,27 @@ export async function previewOffChainSimulation(
     totalNodes = 1n;
   }
 
-  // Snapshot all real on-chain Rank 1 nodes before in-memory simulation
+  // Snapshot all real on-chain Rank 1 nodes with Clone Lineage metadata before in-memory simulation
+  const initialLineageMap = buildCloneLineageMap(rankNodes);
   const onChainNodesList: WalletNodeDetail[] = Object.values(rankNodes)
     .sort((a, b) => Number(a.id - b.id))
-    .map((n) => ({
-      id: n.id.toString(),
-      owner: n.owner,
-      directSponsor: n.directSponsor,
-      parentId: n.parentId.toString(),
-      leftChild: n.leftChild.toString(),
-      rightChild: n.rightChild.toString(),
-      isClone: n.isClone,
-    }));
+    .map((n) => {
+      const idStr = n.id.toString();
+      const meta = initialLineageMap.get(idStr);
+      return {
+        id: idStr,
+        owner: n.owner,
+        directSponsor: n.directSponsor,
+        parentId: n.parentId.toString(),
+        leftChild: n.leftChild.toString(),
+        rightChild: n.rightChild.toString(),
+        isClone: n.isClone,
+        originMainId: meta?.originMainId || idStr,
+        spawnedFromNodeId: meta?.spawnedFromNodeId || '0',
+        cloneRound: meta?.cloneRound || 0,
+        subCloneDepth: meta?.subCloneDepth || 0,
+      };
+    });
 
   const sponsorNodeDetail: WalletNodeDetail | null =
     onChainNodesList.find((n) => n.id === String(sponsorNodeId)) || null;
@@ -813,23 +965,28 @@ export async function executeOffChainSimulationAndBatch(
       await approveTx.wait();
     }
 
-    // เงื่อนไขระบบคิว: พอถึงคิวส่ง ให้เรียกใช้ฟังชั่น 'ออโต้ตามรอบสัญญา' (previewPlacement) อีกรอบก่อนส่ง
+    // รีเฟรชการคำนวณตำแหน่งจากสถานะเชนล่าสุดอีกครั้งก่อนส่งธุรกรรม เพื่อให้มั่นใจว่าตรงกับรหัสหลักของผู้แนะนำ (#sponsorNodeId)
     if (mode === 'contract_round') {
       try {
-        onProgress('ถึงคิวส่งแล้ว! กำลังเรียกใช้ฟังก์ชัน "ออโต้ตามรอบสัญญา" (previewPlacement) ตรวจสอบอีกรอบก่อนส่ง...');
-        const preview = await contract.previewPlacement(1, simResult.sponsorAddress);
-        const liveParent = String(preview.targetParentId ?? preview[0]);
-        const liveLeft = Boolean(preview.isLeft ?? preview[1]);
-        const liveRound = Number(preview.activeRound ?? preview[2] ?? 0);
-
-        if (liveParent && liveParent !== '0' && simResult.targetParentIds.length > 0) {
-          simResult.targetParentIds[0] = liveParent;
-          simResult.targetParentIdsBigInt[0] = BigInt(liveParent);
-          simResult.isLefts[0] = liveLeft;
-          onProgress(`ผลรอบสัญญา #${liveRound} ล่าสุด: ยืนยันลงตำแหน่ง Parent #${liveParent} (${liveLeft ? 'ซ้าย' : 'ขวา'})`);
+        onProgress(
+          `ถึงคิวส่งแล้ว! กำลังตรวจสอบตำแหน่งสายตรงและโคลนนิ่งของ Sponsor #${sponsorNodeId} ล่าสุด...`
+        );
+        const latestSim = await previewOffChainSimulation(
+          signer,
+          contractAddress,
+          sponsorNodeId,
+          applicantsQueue,
+          undefined,
+          mode
+        );
+        if (latestSim.targetParentIds.length === count) {
+          simResult.targetParentIds = latestSim.targetParentIds;
+          simResult.targetParentIdsBigInt = latestSim.targetParentIdsBigInt;
+          simResult.isLefts = latestSim.isLefts;
+          simResult.stepLogs = latestSim.stepLogs;
         }
       } catch (cpErr) {
-        console.warn('Notice re-verifying contract round before sending batch:', cpErr);
+        console.warn('Notice re-verifying placement before sending batch:', cpErr);
       }
     }
 

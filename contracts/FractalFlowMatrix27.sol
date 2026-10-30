@@ -566,6 +566,8 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
     mapping(uint8 => uint256) public totalNodesInRank;
     mapping(uint8 => mapping(uint256 => uint8)) public sponsorRoundToggle;
     mapping(uint8 => mapping(uint256 => uint256)) public nodeUpgradeVault; // แยกกระปุก Vault อิสระรายโหนด (เงินแยกของใครของมัน)
+    mapping(uint8 => mapping(uint256 => uint256)) public nodeOriginMainId; // รหัสหลักต้นสังกัดของแต่ละโหนด (เช่น โคลน #8 -> รหัสหลัก #2, โคลน #24 -> รหัสหลัก #6)
+    mapping(uint8 => mapping(uint256 => uint256)) public mainNodeLatestCloneId; // โคลนนิ่งของแต่ละรหัสหลักแยกอิสระ (เช่น #2 -> #8, #6 -> #24)
     mapping(address => UserAccount) private users;
 
     event UserRegistered(address indexed user, address indexed sponsor, uint256 indexed sponsorNodeId, uint256 mainNodeId);
@@ -620,6 +622,7 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
             });
             users[_rootUser].firstNodeId[r] = 1;
             users[_rootUser].latestNodeId[r] = 1;
+            nodeOriginMainId[r][1] = 1;
 
             emit NodeCreated(r, 1, _rootUser, address(0), 0, true, false, false);
         }
@@ -915,8 +918,11 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
                 rankNodes[1][parentId].rightChild = newNodeId;
             }
 
-            if (!isClone && users[msg.sender].firstNodeId[1] == 0) {
-                users[msg.sender].firstNodeId[1] = newNodeId;
+            if (!isClone) {
+                nodeOriginMainId[1][newNodeId] = newNodeId;
+                if (users[msg.sender].firstNodeId[1] == 0) {
+                    users[msg.sender].firstNodeId[1] = newNodeId;
+                }
             }
             users[msg.sender].latestNodeId[1] = newNodeId;
 
@@ -1060,8 +1066,18 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
             rankNodes[_rank][parentId].rightChild = newNodeId;
         }
 
-        if (!_isClone && !_isExtraId && users[_owner].firstNodeId[_rank] == 0) {
-            users[_owner].firstNodeId[_rank] = newNodeId;
+        if (!_isClone && !_isExtraId) {
+            nodeOriginMainId[_rank][newNodeId] = newNodeId;
+            if (users[_owner].firstNodeId[_rank] == 0) {
+                users[_owner].firstNodeId[_rank] = newNodeId;
+            }
+        } else if (_isClone) {
+            uint256 originId = nodeOriginMainId[_rank][effectiveSponsorNodeId];
+            if (originId == 0) {
+                originId = effectiveSponsorNodeId;
+            }
+            nodeOriginMainId[_rank][newNodeId] = originId;
+            mainNodeLatestCloneId[_rank][originId] = newNodeId;
         }
         if (!_isExtraId) {
             users[_owner].latestNodeId[_rank] = newNodeId;
@@ -1080,7 +1096,7 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
 
     /// @notice ฟังก์ชันวางตำแหน่งสำหรับ Extra ID, New Main ID และโคลน: ไม่นับรอบ (Direct Sponsor Line)
     /// ขั้นตอนที่ 1: ติดตัวผู้แนะนำ (Primary Node) - ซ้ายว่างลงซ้าย, ขวาว่างลงขวา
-    /// ขั้นตอนที่ 2: ติดตัวโคลนล่าสุด (Latest Clone ID) - ซ้ายโคลนว่างลงซ้ายโคลน, ขวาโคลนว่างลงขวาโคลน
+    /// ขั้นตอนที่ 2: ติดตัวโคลนของรหัสหลักนั้น (mainNodeLatestCloneId) - ซ้ายโคลนว่างลงซ้ายโคลน, ขวาโคลนว่างลงขวาโคลน
     function _findDirectAndClonePlacement(uint8 _rank, address _sponsor, uint256 _sponsorNodeId) internal view returns (uint256 parentId, bool isLeft) {
         uint256 primaryNodeId = _sponsorNodeId;
         if (primaryNodeId == 0) {
@@ -1090,47 +1106,33 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
             primaryNodeId = 1;
         }
 
-        // ขั้นตอนที่ 1: ติดตัวผู้แนะนำ (Primary Sponsor Node)
-        MatrixNode storage primaryNode = rankNodes[_rank][primaryNodeId];
-        if (primaryNode.leftChild == 0) return (primaryNodeId, true);
-        if (primaryNode.rightChild == 0) return (primaryNodeId, false);
+        uint256 originMainId = nodeOriginMainId[_rank][primaryNodeId];
+        if (originMainId == 0) {
+            originMainId = primaryNodeId;
+        }
 
-        // ขั้นตอนที่ 2: ติดตัวโคลนล่าสุด (Latest Clone ID ของผู้แนะนำ)
-        uint256 latestCloneId = users[_sponsor].latestNodeId[_rank];
-        if (latestCloneId != 0 && latestCloneId != primaryNodeId) {
+        // ขั้นตอนที่ 1: ติดตัวผู้แนะนำ (Primary Sponsor Node)
+        MatrixNode storage primaryNode = rankNodes[_rank][originMainId];
+        if (primaryNode.leftChild == 0) return (originMainId, true);
+        if (primaryNode.rightChild == 0) return (originMainId, false);
+
+        // ขั้นตอนที่ 2: ติดตัวโคลนของรหัสหลักนั้นโดยเฉพาะ (ไม่ข้ามไปโคลนของรหัสหลักอื่นในกระเป๋าเดียวกัน)
+        uint256 latestCloneId = mainNodeLatestCloneId[_rank][originMainId];
+        if (latestCloneId != 0 && latestCloneId != originMainId) {
             MatrixNode storage latestNode = rankNodes[_rank][latestCloneId];
             if (latestNode.leftChild == 0) return (latestCloneId, true);
             if (latestNode.rightChild == 0) return (latestCloneId, false);
         }
 
-        // ถ้าเต็มทั้งผู้แนะนำและโคลนล่าสุด ให้ค้นหาช่องว่างที่ตื้นที่สุดใต้ผู้แนะนำ
-        return _findFirstAvailableUnder(_rank, primaryNodeId);
+        // ถ้าเต็มทั้งผู้แนะนำและโคลนของรหัสหลักนั้น ให้ค้นหาช่องว่างที่ตื้นที่สุดใต้รหัสหลักนั้น
+        return _findFirstAvailableUnder(_rank, originMainId);
     }
 
     function _findPlacementWithRound(uint8 _rank, address _sponsor, uint256 _sponsorNodeId, uint8 _round) internal view returns (uint256 parentId, bool isLeft) {
 
         if (_round == 0) {
-            // การวางตำแหน่งรอบ 1: ต่อติดตัวของผู้แนะนำ (Direct Sponsor Line) และโคลนนิ่งของผู้แนะนำตรงเท่านั้น
-            uint256 primaryNodeId = _sponsorNodeId;
-            if (primaryNodeId == 0) {
-                primaryNodeId = users[_sponsor].firstNodeId[_rank];
-            }
-            if (primaryNodeId == 0) {
-                primaryNodeId = 1;
-            }
-
-            MatrixNode storage primaryNode = rankNodes[_rank][primaryNodeId];
-            if (primaryNode.leftChild == 0) return (primaryNodeId, true);
-            if (primaryNode.rightChild == 0) return (primaryNodeId, false);
-
-            uint256 latestCloneId = users[_sponsor].latestNodeId[_rank];
-            if (latestCloneId != 0 && latestCloneId != primaryNodeId) {
-                MatrixNode storage latestNode = rankNodes[_rank][latestCloneId];
-                if (latestNode.leftChild == 0) return (latestCloneId, true);
-                if (latestNode.rightChild == 0) return (latestCloneId, false);
-            }
-
-            return _findFirstAvailableUnder(_rank, primaryNodeId);
+            // การวางตำแหน่งรอบ 1: ต่อติดตัวของผู้แนะนำ (Direct Sponsor Line) และโคลนนิ่งของรหัสหลักนั้นเท่านั้น
+            return _findDirectAndClonePlacement(_rank, _sponsor, _sponsorNodeId);
         } else {
             // การวางตำแหน่งรอบ 2: ค้นหาแบบ "กว้างนำยาว" (BFS ทีละชั้นแนวระนาบ เริ่มจาก Root Node #1)
             return _findGlobalShallowestAvailable(_rank);

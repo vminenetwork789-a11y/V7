@@ -50,6 +50,15 @@ export default function App() {
     clearTxState,
   } = useWeb3();
 
+  React.useEffect(() => {
+    if (Array.isArray(profile?.vaults) && profile.vaults.length > 0) {
+      const targetVault = profile.vaults.find((v: any) => Number(v.rank) === selectedInspectRank);
+      if (targetVault) {
+        setSelectedVaultBalance(`${Number(targetVault.balance || 0).toFixed(2)} USDT`);
+      }
+    }
+  }, [profile?.vaults, selectedInspectRank]);
+
   return (
     <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-[#0a0f1d] text-slate-100 flex flex-col justify-between font-sans selection:bg-emerald-500/30 selection:text-emerald-200">
       <Header

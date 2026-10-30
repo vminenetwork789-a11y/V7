@@ -33,7 +33,7 @@ const PORT = 3000;
 const CONFIG_FILE_PATH = path.resolve(__dirname, 'prisma/contract-config.json');
 
 const DEFAULT_SYSTEM_CONFIG = {
-  contractAddress: process.env.OVERRIDE_CONTRACT_ADDRESS || '0x82d07E805F670943A3DbF74ab777eb89189c7c27',
+  contractAddress: process.env.OVERRIDE_CONTRACT_ADDRESS || '0xf09a03DF9D6F89049dBDbCC5bFdB3D2BE3Bc5f10',
   usdtAddress: process.env.USDT_ADDRESS || '0x95856BE9c16afc9C147C034Cd6a514D730bD90Ba',
   chainId: 97,
   networkName: 'BNB Smart Chain Testnet',
@@ -757,15 +757,116 @@ function bfsFindNextVacant(nodesMap: Map<string, SimulatedQueueNode>, startId: s
   return { parentId: startId, isLeft: true };
 }
 
+function buildServerCloneLineageMap(
+  nodesMap: Map<string, SimulatedQueueNode>
+): Map<string, { originMainId: string; spawnedFromNodeId: string; cloneRound: number }> {
+  const lineageMap = new Map<string, { originMainId: string; spawnedFromNodeId: string; cloneRound: number }>();
+  const matchedRightTriggers = new Set<string>();
+  const ownerPrimaryNodeMap = new Map<string, string>();
+  const ownerAllMainNodesMap = new Map<string, string[]>();
+  const mainNodeCloneRoundCount = new Map<string, number>();
+
+  const sortedIds = Array.from(nodesMap.keys())
+    .map((k) => Number(k))
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .sort((a, b) => a - b);
+
+  const isAncestorOf = (candidateAncestorId: string, targetId: string): boolean => {
+    if (!candidateAncestorId || candidateAncestorId === '0' || !targetId || targetId === '0') {
+      return false;
+    }
+    let curr = targetId;
+    const guard = new Set<string>();
+    while (curr && curr !== '0' && !guard.has(curr)) {
+      if (curr === candidateAncestorId) return true;
+      guard.add(curr);
+      const p = nodesMap.get(curr);
+      curr = p ? p.parentId : '0';
+    }
+    return false;
+  };
+
+  for (const numId of sortedIds) {
+    const idStr = String(numId);
+    const n = nodesMap.get(idStr);
+    if (!n) continue;
+    const ownerKey = (n.owner || '').toLowerCase();
+
+    if (!n.isClone && !n.isExtraId) {
+      if (!ownerPrimaryNodeMap.has(ownerKey)) {
+        ownerPrimaryNodeMap.set(ownerKey, idStr);
+      }
+      const list = ownerAllMainNodesMap.get(ownerKey) || [];
+      list.push(idStr);
+      ownerAllMainNodesMap.set(ownerKey, list);
+
+      lineageMap.set(idStr, {
+        originMainId: idStr,
+        spawnedFromNodeId: '0',
+        cloneRound: 0,
+      });
+    } else if (n.isClone) {
+      let spawnedFromNodeId = '0';
+      const walletFirstId = ownerPrimaryNodeMap.get(ownerKey) || idStr;
+
+      for (let lookback = numId - 1; lookback >= 1; lookback--) {
+        const candidateRightChild = nodesMap.get(String(lookback));
+        if (!candidateRightChild || !candidateRightChild.parentId || candidateRightChild.parentId === '0') continue;
+        const triggerParentIdStr = candidateRightChild.parentId;
+        const triggerParent = nodesMap.get(triggerParentIdStr);
+        if (
+          triggerParent &&
+          triggerParent.rightChild === candidateRightChild.id &&
+          (triggerParent.owner || '').toLowerCase() === ownerKey &&
+          !matchedRightTriggers.has(triggerParentIdStr)
+        ) {
+          spawnedFromNodeId = triggerParentIdStr;
+          matchedRightTriggers.add(triggerParentIdStr);
+          break;
+        }
+      }
+
+      if (spawnedFromNodeId === '0') {
+        const ownerMains = ownerAllMainNodesMap.get(ownerKey) || [];
+        const matchingSubtreeMain = [...ownerMains]
+          .reverse()
+          .find((mId) => Number(mId) < numId && isAncestorOf(mId, idStr));
+        spawnedFromNodeId = matchingSubtreeMain || walletFirstId;
+      }
+
+      const triggerMeta = lineageMap.get(spawnedFromNodeId);
+      const originMainId = triggerMeta ? triggerMeta.originMainId : spawnedFromNodeId;
+      const prevCount = mainNodeCloneRoundCount.get(originMainId) || 0;
+      const currentCount = prevCount + 1;
+      mainNodeCloneRoundCount.set(originMainId, currentCount);
+      const cloneRound = ((currentCount - 1) % 2) + 1;
+
+      lineageMap.set(idStr, {
+        originMainId,
+        spawnedFromNodeId,
+        cloneRound,
+      });
+    } else {
+      lineageMap.set(idStr, {
+        originMainId: idStr,
+        spawnedFromNodeId: '0',
+        cloneRound: 0,
+      });
+    }
+  }
+
+  return lineageMap;
+}
+
 function calculateQueueSlot(
   nodesMap: Map<string, SimulatedQueueNode>,
   ownerFirstNodeMap: Map<string, string>,
-  ownerLatestNodeMap: Map<string, string>,
+  _ownerLatestNodeMap: Map<string, string>,
   sponsorAddress: string,
   sponsorNodeId: number,
   mode: 'auto_under_sponsor' | 'global_bfs' | 'contract_round' = 'contract_round'
 ): { targetParentId: string; isLeft: boolean; activeRound: number; targetType: 'main' | 'clone' | 'descendant' } {
-  const sponsorStrId = String(sponsorNodeId);
+  const sponsorStrId = String(sponsorNodeId || 1);
   const sponsorKey = (sponsorAddress || '').toLowerCase();
 
   // Mode: Global BFS
@@ -774,9 +875,31 @@ function calculateQueueSlot(
     return { targetParentId: slot.parentId, isLeft: slot.isLeft, activeRound: 1, targetType: 'descendant' };
   }
 
-  // 1. เงื่อนไขสมัคร: จะต้องไปต่อติดตัวของผู้แนะนำตรง Direct Sponsor (ซ้ายก่อน ขวาตาม)
+  // Mode: Auto Under Sponsor BFS
+  if (mode === 'auto_under_sponsor') {
+    const slot = bfsFindNextVacant(nodesMap, sponsorStrId);
+    return { targetParentId: slot.parentId, isLeft: slot.isLeft, activeRound: 0, targetType: 'descendant' };
+  }
+
+  const lineageMap = buildServerCloneLineageMap(nodesMap);
+  const requestedNode = nodesMap.get(sponsorStrId);
+  const requestedMeta = lineageMap.get(sponsorStrId);
+
+  // หากระบุเป็นรหัสโคลนโดยตรง ให้ตรวจช่องว่างของโคลนนั้นก่อน
+  if (requestedNode && requestedNode.isClone) {
+    if (requestedNode.leftChild === '0' || !requestedNode.leftChild) {
+      return { targetParentId: requestedNode.id, isLeft: true, activeRound: 0, targetType: 'clone' };
+    }
+    if (requestedNode.rightChild === '0' || !requestedNode.rightChild) {
+      return { targetParentId: requestedNode.id, isLeft: false, activeRound: 0, targetType: 'clone' };
+    }
+  }
+
+  const targetMainIdStr = requestedMeta ? requestedMeta.originMainId : sponsorStrId;
+
+  // 1. เงื่อนไขสมัคร: จะต้องไปต่อติดตัวของผู้แนะนำตรง Direct Sponsor (#targetMainIdStr) ซ้ายก่อน ขวาตาม
   const mainNode =
-    nodesMap.get(sponsorStrId) ||
+    nodesMap.get(targetMainIdStr) ||
     (ownerFirstNodeMap.get(sponsorKey) ? nodesMap.get(ownerFirstNodeMap.get(sponsorKey)!) : undefined);
 
   if (mainNode) {
@@ -788,40 +911,22 @@ function calculateQueueSlot(
     }
   }
 
-  // Helper: ตรวจสอบว่า targetId อยู่ใต้สายงาน (subtree) ของ rootId หรือไม่
-  const isNodeInSubtree = (targetId: string, rootId: string): boolean => {
-    let curr = targetId;
-    let hops = 0;
-    while (curr && curr !== '0' && hops < 64) {
-      if (curr === rootId) return true;
-      const n = nodesMap.get(curr);
-      if (!n) break;
-      curr = n.parentId;
-      hops++;
-    }
-    return false;
-  };
-
-  // 2. ตรวจสอบโคลนล่าสุดของผู้แนะนำตรง (ให้ความสำคัญกับโคลนในสายของ Main ID #sponsorStrId ก่อน)
-  const subtreeClones: SimulatedQueueNode[] = [];
-  const allWalletClones: SimulatedQueueNode[] = [];
+  // 2. ตรวจสอบเฉพาะโคลนนิ่งที่มีรหัสหลัก (originMainId) ตรงกับ #targetMainIdStr เท่านั้น!
+  // เช่น กรอกผู้แนะนำ 2 -> ดึงเฉพาะโคลนของ #2 (เช่น #8 [#2 #8 #0 รอบ 1]) ไม่ข้ามไป #24 ที่เป็นของ #6
+  const clonesOfThisMainId: SimulatedQueueNode[] = [];
 
   for (const node of nodesMap.values()) {
-    if (node.isClone && node.owner.toLowerCase() === sponsorKey) {
-      if (isNodeInSubtree(node.id, sponsorStrId)) {
-        subtreeClones.push(node);
-      }
-      allWalletClones.push(node);
+    if (!node.isClone) continue;
+    const meta = lineageMap.get(node.id);
+    if (meta && meta.originMainId === targetMainIdStr) {
+      clonesOfThisMainId.push(node);
     }
   }
 
-  subtreeClones.sort((a, b) => Number(b.id) - Number(a.id));
-  allWalletClones.sort((a, b) => Number(b.id) - Number(a.id));
+  clonesOfThisMainId.sort((a, b) => Number(a.id) - Number(b.id));
 
-  const sponsorClones = subtreeClones.length > 0 ? subtreeClones : allWalletClones;
-
-  if (sponsorClones.length > 0) {
-    const openClone = sponsorClones.find(
+  if (clonesOfThisMainId.length > 0) {
+    const openClone = clonesOfThisMainId.find(
       (c) => c.leftChild === '0' || !c.leftChild || c.rightChild === '0' || !c.rightChild
     );
     if (openClone) {
@@ -832,8 +937,8 @@ function calculateQueueSlot(
     }
   }
 
-  // 3. หากโหนดหลักและโคลนติดตัวเต็มหมด ให้หาช่องว่างใต้โหนดหลักของผู้แนะนำ (#sponsorStrId)
-  const slot = bfsFindNextVacant(nodesMap, sponsorStrId);
+  // 3. หากโหนดหลัก #targetMainIdStr และโคลนของ #targetMainIdStr เต็มหมด ให้หาช่องว่างใต้ #targetMainIdStr
+  const slot = bfsFindNextVacant(nodesMap, targetMainIdStr);
   return { targetParentId: slot.parentId, isLeft: slot.isLeft, activeRound: 0, targetType: 'descendant' };
 }
 
@@ -868,7 +973,7 @@ async function processPlacementJob(jobData: QueueReserveRequest): Promise<Positi
   const batchDetails: PositionReservation['batchDetails'] = [];
 
   // เงื่อนไขสมัครสมาชิก: จะต้องไปต่อติดตัวของผู้แนะนำตรง Direct Sponsor ซ้ายก่อนขวา
-  // แต่ถ้าผู้แนะนำตรงไม่มีช่องว่าง ก็ให้ไปวางต่อติดตัวโคลนนิ่ง Direct Sponsor เท่านั้น
+  // แต่ถ้าผู้แนะนำตรงไม่มีช่องว่าง ก็ให้ไปวางต่อติดตัวโคลนนิ่งของรหัสหลักผู้แนะนำนั้นเท่านั้น
   for (let idx = 0; idx < applicantList.length; idx++) {
     const appOwner = applicantList[idx].owner || owner;
     const placement = calculateQueueSlot(
@@ -881,7 +986,7 @@ async function processPlacementJob(jobData: QueueReserveRequest): Promise<Positi
     );
 
     const assignedId = String(nextNodeId++);
-    const isClone = idx > 0;
+    const isClone = false;
 
     batchDetails.push({
       applicantIndex: idx,

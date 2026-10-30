@@ -69,6 +69,8 @@ export interface EnrichedBinaryNode {
   totalExtraIdCount: number; // จำนวน New Extra ID ทั้งหมด
   vaultBalance: number;
   nextRankPrice: number;
+  familyPoolDirectFromLineage?: number; // 30% จากโคลน #1 ลงซ้ายที่ถูกส่งเข้า Family Pool
+  grossVaultFromLineage?: number; // ยอดสะสม Vault รวมก่อนหักออก Auto ID / อัปเกรด
 }
 
 interface ConnectorLine {
@@ -707,14 +709,43 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
       const ownerPrimaryNodeMap = new Map<string, number>();
       const ownerAllMainNodesMap = new Map<string, number[]>();
       const nodeCloneRoundCount = new Map<number, number>();
-      const ownerExtraIdCount = new Map<string, number>();
-      const ownerAutoMainIdCount = new Map<string, number>();
       const nodeSpawnedClones = new Map<number, Array<{ cloneNodeId: number; round: number }>>();
       const nodeDirectBonusMap = new Map<number, number>();
       const nodeUnilevelBonusMap = new Map<number, number>();
       const autoMainNodeIds = new Set<number>();
+      const autoIdSourceMainMap = new Map<number, number>();
+      const mainNodeAutoIdSpawnCount = new Map<number, number>();
+      const lineageExtraIdSpawnCount = new Map<number, number>();
+      const lineageUpgradeVault = new Map<number, number>();
+      const lineageAutoIdVault = new Map<number, number>();
+      const lineageExtraIdVault = new Map<number, number>();
+      const lineageGrossVaultMap = new Map<number, number>();
+      const lineageFamilyPoolDirectMap = new Map<number, number>();
+      const lineageHasUpgraded = new Map<number, boolean>();
 
       const sortedIds = Array.from(rawNodes.keys()).sort((a, b) => a - b);
+      const rootOwnerKey = (rawNodes.get(1)?.owner || '').toLowerCase();
+
+      // Fetch currentMaxRank for unique owners in the tree so we know whether selectedRank + 1 is already unlocked
+      const uniqueOwners = Array.from(
+        new Set(
+          Array.from(rawNodes.values())
+            .map((n) => n.owner)
+            .filter((addr) => addr && addr !== ethers.ZeroAddress)
+        )
+      );
+      const ownerMaxRankMap = new Map<string, number>();
+      await Promise.all(
+        uniqueOwners.map(async (ownerAddr) => {
+          try {
+            const prof = await contract.getUserProfile(ownerAddr);
+            const maxR = Number(prof.currentMaxRank ?? prof[3] ?? 1);
+            ownerMaxRankMap.set(ownerAddr.toLowerCase(), maxR > 0 ? maxR : 1);
+          } catch {
+            ownerMaxRankMap.set(ownerAddr.toLowerCase(), 1);
+          }
+        })
+      );
 
       // Helper to check if candidateAncestorId is an ancestor of targetId in the binary tree
       const isAncestorOf = (candidateAncestorId: number, targetId: number): boolean => {
@@ -730,53 +761,20 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
         return false;
       };
 
-      // Helper to resolve the exact Sponsor Main Node ID when a sponsor wallet owns multiple Main IDs
-      const resolveSponsorNodeIdForNode = (nodeId: number, sponsorAddr: string): number => {
-        if (!sponsorAddr || sponsorAddr === ethers.ZeroAddress) return 1;
-        const sponsorKey = sponsorAddr.toLowerCase();
-        const candidateMainIds = ownerAllMainNodesMap.get(sponsorKey) || [];
-        if (candidateMainIds.length === 0) {
-          return ownerPrimaryNodeMap.get(sponsorKey) || 1;
-        }
-        if (candidateMainIds.length === 1) {
-          return candidateMainIds[0];
-        }
-        // Walk up ancestors from nodeId.parentId to find the nearest Main ID owned by sponsorAddr
-        let curr = rawNodes.get(nodeId)?.parentId || 0;
-        const visitedAnc = new Set<number>();
-        while (curr > 0 && !visitedAnc.has(curr)) {
-          visitedAnc.add(curr);
-          const anc = rawNodes.get(curr);
-          if (!anc) break;
-          if (!anc.isClone && !anc.isExtraId && anc.owner.toLowerCase() === sponsorKey && curr < nodeId) {
-            return curr;
-          }
-          curr = anc.parentId;
-        }
-        // Otherwise pick the latest Main ID of sponsorAddr created before nodeId, or the first Main ID
-        const priorMainIds = candidateMainIds.filter((mId) => mId < nodeId);
-        return priorMainIds.length > 0 ? priorMainIds[0] : candidateMainIds[0];
-      };
-
-      // Pre-pass: Count all left children placed under each owner's nodes to establish available Vault 1-4 pool
-      const ownerLeftChildVaultCount = new Map<string, number>();
-      for (const id of sortedIds) {
-        const n = rawNodes.get(id)!;
-        if (n.parentId > 0) {
-          const pNode = rawNodes.get(n.parentId);
-          if (pNode && pNode.leftChild === n.id) {
-            const pOwnerKey = pNode.owner.toLowerCase();
-            ownerLeftChildVaultCount.set(
-              pOwnerKey,
-              (ownerLeftChildVaultCount.get(pOwnerKey) || 0) + 1
-            );
-          }
-        }
-      }
+      // Pass 1: Build Clone Lineage (originMainId, spawnedFromNodeId, cloneRound, subCloneDepth) first
+      const originMainIdMap = new Map<number, number>();
+      const spawnedFromMap = new Map<number, number>();
+      const cloneRoundMap = new Map<number, number>();
+      const subCloneDepthMap = new Map<number, number>();
+      const matchedRightTriggers = new Set<number>();
 
       for (const id of sortedIds) {
         const n = rawNodes.get(id)!;
         const ownerKey = n.owner.toLowerCase();
+        nodeSpawnedClones.set(id, []);
+        nodeDirectBonusMap.set(id, 0);
+        nodeUnilevelBonusMap.set(id, 0);
+
         if (!n.isClone && !n.isExtraId) {
           if (!ownerPrimaryNodeMap.has(ownerKey)) {
             ownerPrimaryNodeMap.set(ownerKey, n.id);
@@ -785,72 +783,14 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
           existingMains.push(n.id);
           ownerAllMainNodesMap.set(ownerKey, existingMains);
 
-          // A secondary Main ID (existingMains.length > 1) where directSponsor === owner or created from Vault 1-4
-          const isSecondaryMain = existingMains.length > 1;
-          const isSelfSponsored = Boolean(n.directSponsor && n.directSponsor.toLowerCase() === ownerKey);
-          const hasVaultAccumulation = (ownerLeftChildVaultCount.get(ownerKey) || 0) * vaultUnit >= 5;
+          originMainIdMap.set(n.id, n.id);
+          spawnedFromMap.set(n.id, 0);
+          cloneRoundMap.set(n.id, 0);
+          subCloneDepthMap.set(n.id, 0);
+        } else if (n.isClone) {
+          const walletFirstId = ownerPrimaryNodeMap.get(ownerKey) || n.id;
+          let spawnedFromNodeId = 0;
 
-          if (isSecondaryMain && (isSelfSponsored || hasVaultAccumulation)) {
-            autoMainNodeIds.add(n.id);
-            ownerAutoMainIdCount.set(ownerKey, (ownerAutoMainIdCount.get(ownerKey) || 0) + 1);
-            // Deduct 5 USDT worth of vault units consumed by this Auto New Main ID
-            const currentVaultUnits = ownerLeftChildVaultCount.get(ownerKey) || 0;
-            const consumedUnits = Math.ceil(5 / vaultUnit);
-            ownerLeftChildVaultCount.set(ownerKey, Math.max(0, currentVaultUnits - consumedUnits));
-          }
-        }
-        if (n.isExtraId) {
-          ownerExtraIdCount.set(ownerKey, (ownerExtraIdCount.get(ownerKey) || 0) + 1);
-        }
-        nodeSpawnedClones.set(id, []);
-        nodeDirectBonusMap.set(id, 0);
-        nodeUnilevelBonusMap.set(id, 0);
-      }
-
-      // Compute Direct (30%) and 15-Level Unilevel (2% per tier) triggered by every Left Child
-      for (const id of sortedIds) {
-        const n = rawNodes.get(id)!;
-        if (n.parentId === 0) continue;
-        const parent = rawNodes.get(n.parentId);
-        if (!parent) continue;
-
-        const isLeftChild = parent.leftChild === n.id;
-        if (isLeftChild) {
-          const sponsorNodeId = resolveSponsorNodeIdForNode(n.id, n.directSponsor);
-          nodeDirectBonusMap.set(
-            sponsorNodeId,
-            (nodeDirectBonusMap.get(sponsorNodeId) || 0) + directBonusUnit
-          );
-
-          let currUplineId = n.parentId;
-          for (let tier = 1; tier <= 15 && currUplineId > 0; tier++) {
-            nodeUnilevelBonusMap.set(
-              currUplineId,
-              (nodeUnilevelBonusMap.get(currUplineId) || 0) + unilevelBonusUnit
-            );
-            const upNode = rawNodes.get(currUplineId);
-            currUplineId = upNode ? upNode.parentId : 0;
-          }
-        }
-      }
-
-      const enrichedMap = new Map<number, EnrichedBinaryNode>();
-      // Track which right-child trigger parent has already been matched to a clone
-      const matchedRightTriggers = new Set<number>();
-
-      for (const id of sortedIds) {
-        const n = rawNodes.get(id)!;
-        const ownerKey = n.owner.toLowerCase();
-        const walletFirstId = ownerPrimaryNodeMap.get(ownerKey) || n.id;
-
-        let spawnedFromNodeId = 0;
-        // Every non-clone node (including 2nd, 3rd New Main ID of the same wallet) is its own Main ID (#id)
-        let originMainId = n.isClone ? walletFirstId : n.id;
-        let cloneRound = 0;
-        let subCloneDepth = 0;
-
-        if (n.isClone) {
-          // Determine which node's Right child triggered this Clone (checks id-1 backwards for cascade clones)
           for (let lookback = id - 1; lookback >= 1; lookback--) {
             const candidateRightChild = rawNodes.get(lookback);
             if (!candidateRightChild || candidateRightChild.parentId <= 0) continue;
@@ -868,7 +808,6 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
           }
 
           if (spawnedFromNodeId === 0) {
-            // Fallback: check if this clone is placed inside the subtree of one of this wallet's Main IDs
             const ownerMains = ownerAllMainNodesMap.get(ownerKey) || [];
             const matchingSubtreeMain = [...ownerMains]
               .reverse()
@@ -876,29 +815,225 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
             spawnedFromNodeId = matchingSubtreeMain || walletFirstId;
           }
 
-          // Walk up clone chain if spawnedFromNodeId was itself a clone to find its root Main ID (รหัสหลัก)
-          const triggerEnriched = enrichedMap.get(spawnedFromNodeId);
-          if (triggerEnriched) {
-            originMainId = triggerEnriched.isClone
-              ? triggerEnriched.originMainId
-              : triggerEnriched.id;
-            subCloneDepth = triggerEnriched.isClone ? triggerEnriched.subCloneDepth + 1 : 0;
-          } else {
-            originMainId = spawnedFromNodeId;
-            subCloneDepth = 0;
-          }
+          const triggerIsClone = Boolean(rawNodes.get(spawnedFromNodeId)?.isClone);
+          const originMainId = triggerIsClone
+            ? originMainIdMap.get(spawnedFromNodeId) || walletFirstId
+            : spawnedFromNodeId;
+          const subCloneDepth = triggerIsClone
+            ? (subCloneDepthMap.get(spawnedFromNodeId) || 0) + 1
+            : 0;
 
           const prevCount = nodeCloneRoundCount.get(originMainId) || 0;
           const currentCount = prevCount + 1;
           nodeCloneRoundCount.set(originMainId, currentCount);
+          const cloneRound = ((currentCount - 1) % 2) + 1;
 
-          // รอบโคลนนิ่งสลับ 1-2-1-2-1-2 (รอบ 1 และ รอบ 2)
-          cloneRound = ((currentCount - 1) % 2) + 1;
+          originMainIdMap.set(n.id, originMainId);
+          spawnedFromMap.set(n.id, spawnedFromNodeId);
+          cloneRoundMap.set(n.id, cloneRound);
+          subCloneDepthMap.set(n.id, subCloneDepth);
 
           const list = nodeSpawnedClones.get(spawnedFromNodeId) || [];
           list.push({ cloneNodeId: n.id, round: cloneRound });
           nodeSpawnedClones.set(spawnedFromNodeId, list);
+        } else {
+          const walletFirstId = ownerPrimaryNodeMap.get(ownerKey) || n.id;
+          originMainIdMap.set(n.id, walletFirstId);
+          spawnedFromMap.set(n.id, 0);
+          cloneRoundMap.set(n.id, 0);
+          subCloneDepthMap.set(n.id, 0);
         }
+      }
+
+      // Helper to resolve the exact Sponsor Main Node ID using Clone Lineage (originMainIdMap)
+      const resolveSponsorNodeIdForNode = (nodeId: number, sponsorAddr: string): number => {
+        if (!sponsorAddr || sponsorAddr === ethers.ZeroAddress) return 0;
+        const sponsorKey = sponsorAddr.toLowerCase();
+        const n = rawNodes.get(nodeId);
+
+        // If nodeId is a clone, it inherits the sponsor of its originMainId
+        if (n && n.isClone) {
+          const originMain = originMainIdMap.get(nodeId) || nodeId;
+          if (originMain !== nodeId) {
+            const originNode = rawNodes.get(originMain);
+            if (originNode && originNode.owner.toLowerCase() === sponsorKey) {
+              return originMain;
+            }
+            return resolveSponsorNodeIdForNode(originMain, sponsorAddr);
+          }
+        }
+
+        const candidateMainIds = (ownerAllMainNodesMap.get(sponsorKey) || []).filter(
+          (mId) => mId < nodeId
+        );
+        if (candidateMainIds.length === 0) {
+          return ownerPrimaryNodeMap.get(sponsorKey) || 1;
+        }
+        if (candidateMainIds.length === 1) {
+          return candidateMainIds[0];
+        }
+
+        // Walk up ancestors from nodeId.parentId; if any ancestor (Main ID or Clone) belongs to sponsorAddr, return its originMainId
+        let curr = n?.parentId || 0;
+        const visitedAnc = new Set<number>();
+        while (curr > 0 && !visitedAnc.has(curr)) {
+          visitedAnc.add(curr);
+          const anc = rawNodes.get(curr);
+          if (!anc) break;
+          if (anc.owner.toLowerCase() === sponsorKey) {
+            const ancOriginMain = originMainIdMap.get(anc.id) || anc.id;
+            if (ancOriginMain < nodeId) {
+              return ancOriginMain;
+            }
+          }
+          curr = anc.parentId;
+        }
+
+        return candidateMainIds[0];
+      };
+
+      // Pass 2: Chronological simulation of Auto New Main IDs, Left-Child Direct (30%), Unilevel (15 tiers x 2%), and Vault Pools (35%)
+      const rank1EntryPrice = RANK_PRICES_USDT[0] || 5;
+      for (const id of sortedIds) {
+        const n = rawNodes.get(id)!;
+        const ownerKey = n.owner.toLowerCase();
+        const firstMainOfOwner = ownerPrimaryNodeMap.get(ownerKey) || n.id;
+
+        // 1. Check if this node was spawned as an Auto New Main ID from Vault 1-4 (checkAndProcessAutoNewMainId)
+        if (!n.isClone && !n.isExtraId && n.id > firstMainOfOwner) {
+          const isSelfSponsored = Boolean(
+            n.directSponsor && n.directSponsor.toLowerCase() === ownerKey
+          );
+          if (isSelfSponsored) {
+            // Find an existing Main ID of this owner whose Auto ID Vault has accumulated >= 5 USDT
+            const priorMains = (ownerAllMainNodesMap.get(ownerKey) || []).filter(
+              (mId) => mId < n.id
+            );
+            const sourceMain = priorMains.find(
+              (mId) => (lineageAutoIdVault.get(mId) || 0) + 1e-9 >= rank1EntryPrice
+            );
+            if (sourceMain !== undefined) {
+              autoMainNodeIds.add(n.id);
+              autoIdSourceMainMap.set(n.id, sourceMain);
+              mainNodeAutoIdSpawnCount.set(
+                sourceMain,
+                (mainNodeAutoIdSpawnCount.get(sourceMain) || 0) + 1
+              );
+              const currentAutoVault = lineageAutoIdVault.get(sourceMain) || 0;
+              lineageAutoIdVault.set(
+                sourceMain,
+                Math.max(0, Number((currentAutoVault - rank1EntryPrice).toFixed(4)))
+              );
+            }
+          }
+        }
+
+        if (n.isExtraId) {
+          const originMain = originMainIdMap.get(n.id) || firstMainOfOwner;
+          lineageExtraIdSpawnCount.set(
+            originMain,
+            (lineageExtraIdSpawnCount.get(originMain) || 0) + 1
+          );
+          const currentExtraVault = lineageExtraIdVault.get(originMain) || 0;
+          if (currentExtraVault >= unitPrice) {
+            lineageExtraIdVault.set(
+              originMain,
+              Math.max(0, Number((currentExtraVault - unitPrice).toFixed(4)))
+            );
+          }
+        }
+
+        // 2. If this node is placed as a Left Child, distribute 30% Direct, 30% Unilevel (15 levels), and 35% Vault
+        if (n.parentId > 0) {
+          const parent = rawNodes.get(n.parentId);
+          if (parent && parent.leftChild === n.id) {
+            // A. 30% Direct Referral (FractalFlowMatrix27.sol lines 1195-1211)
+            // Rule: กรณีเฉพาะไอดีโคลนนิ่ง ID 1 เมื่อไปต่อฝั่งซ้ายของใครก็ตาม 30% ค่าแนะนำตรงจะถูกส่งไปที่ familyPool
+            const isId1Clone =
+              n.isClone &&
+              (n.owner.toLowerCase() === rootOwnerKey || originMainIdMap.get(n.id) === 1);
+            const hasSponsor = Boolean(
+              n.directSponsor && n.directSponsor !== ethers.ZeroAddress
+            );
+
+            if (isId1Clone || !hasSponsor) {
+              const targetLineage = originMainIdMap.get(n.id) || 1;
+              lineageFamilyPoolDirectMap.set(
+                targetLineage,
+                Number(((lineageFamilyPoolDirectMap.get(targetLineage) || 0) + directBonusUnit).toFixed(4))
+              );
+            } else {
+              const sponsorNodeId = resolveSponsorNodeIdForNode(n.id, n.directSponsor);
+              if (sponsorNodeId > 0) {
+                nodeDirectBonusMap.set(
+                  sponsorNodeId,
+                  Number(((nodeDirectBonusMap.get(sponsorNodeId) || 0) + directBonusUnit).toFixed(4))
+                );
+              }
+            }
+
+            // B. 15-Level Unilevel (2% per tier)
+            let currUplineId = n.parentId;
+            for (let tier = 1; tier <= 15 && currUplineId > 0; tier++) {
+              nodeUnilevelBonusMap.set(
+                currUplineId,
+                Number(((nodeUnilevelBonusMap.get(currUplineId) || 0) + unilevelBonusUnit).toFixed(4))
+              );
+              const upNode = rawNodes.get(currUplineId);
+              currUplineId = upNode ? upNode.parentId : 0;
+            }
+
+            // C. 35% Left-Child Upgrade Vault (FractalFlowMatrix27.sol lines 1230-1254)
+            const parentOwnerKey = parent.owner.toLowerCase();
+            const parentMainId = originMainIdMap.get(parent.id) || parent.id;
+            lineageGrossVaultMap.set(
+              parentMainId,
+              Number(((lineageGrossVaultMap.get(parentMainId) || 0) + vaultUnit).toFixed(4))
+            );
+
+            const ownerMaxR = ownerMaxRankMap.get(parentOwnerKey) || 1;
+            const hasUnlockedNextRank =
+              parentOwnerKey === rootOwnerKey ||
+              ownerMaxR > selectedRank ||
+              Boolean(lineageHasUpgraded.get(parentMainId));
+
+            if (!n.isExtraId && selectedRank < 27) {
+              if (hasUnlockedNextRank) {
+                if (selectedRank <= 4) {
+                  lineageAutoIdVault.set(
+                    parentMainId,
+                    Number(((lineageAutoIdVault.get(parentMainId) || 0) + vaultUnit).toFixed(4))
+                  );
+                } else {
+                  lineageExtraIdVault.set(
+                    parentMainId,
+                    Number(((lineageExtraIdVault.get(parentMainId) || 0) + vaultUnit).toFixed(4))
+                  );
+                }
+              } else {
+                const updatedUpgradeVault = Number(
+                  ((lineageUpgradeVault.get(parentMainId) || 0) + vaultUnit).toFixed(4)
+                );
+                if (updatedUpgradeVault >= nextPrice) {
+                  lineageHasUpgraded.set(parentMainId, true);
+                  lineageUpgradeVault.set(parentMainId, 0);
+                } else {
+                  lineageUpgradeVault.set(parentMainId, updatedUpgradeVault);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Pass 3: Build EnrichedBinaryNode map
+      const enrichedMap = new Map<number, EnrichedBinaryNode>();
+      for (const id of sortedIds) {
+        const n = rawNodes.get(id)!;
+        const originMainId = originMainIdMap.get(n.id) || n.id;
+        const spawnedFromNodeId = spawnedFromMap.get(n.id) || 0;
+        const cloneRound = cloneRoundMap.get(n.id) || 0;
+        const subCloneDepth = subCloneDepthMap.get(n.id) || 0;
 
         let depth = 1;
         let currP = n.parentId;
@@ -919,7 +1054,9 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
         }
 
         let directUplineNodeId = 0;
-        if (n.directSponsor && n.directSponsor !== ethers.ZeroAddress) {
+        if (autoIdSourceMainMap.has(n.id)) {
+          directUplineNodeId = autoIdSourceMainMap.get(n.id)!;
+        } else if (n.directSponsor && n.directSponsor !== ethers.ZeroAddress) {
           directUplineNodeId = resolveSponsorNodeIdForNode(n.id, n.directSponsor);
         }
 
@@ -943,28 +1080,23 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
           spawnedFromNodeId,
           cloneRound,
           subCloneDepth,
-          spawnedCloneIds: [],
+          spawnedCloneIds: nodeSpawnedClones.get(n.id) || [],
           directUplineNodeId,
           directRewardThisNode: nodeDirectBonusMap.get(n.id) || 0,
           unilevelRewardThisNode: nodeUnilevelBonusMap.get(n.id) || 0,
           directRewardAllNodes: 0,
           unilevelRewardAllNodes: 0,
-          upgradeRankPool: vaultBalance,
-          newAutoIdPool: selectedRank <= 4 ? vaultBalance : 0,
-          newExtraIdPool: selectedRank >= 4 ? vaultBalance : 0,
+          upgradeRankPool: 0,
+          newAutoIdPool: 0,
+          newExtraIdPool: 0,
           totalClonesCount: 0,
-          totalAutoIdCount: ownerAutoMainIdCount.get(ownerKey) || 0,
-          totalExtraIdCount: ownerExtraIdCount.get(ownerKey) || 0,
+          totalAutoIdCount: 0,
+          totalExtraIdCount: 0,
           vaultBalance,
           nextRankPrice: nextPrice,
+          familyPoolDirectFromLineage: 0,
+          grossVaultFromLineage: 0,
         });
-      }
-
-      for (const [nodeId, clones] of nodeSpawnedClones.entries()) {
-        const target = enrichedMap.get(nodeId);
-        if (target) {
-          target.spawnedCloneIds = clones;
-        }
       }
 
       // เงินแยกของใครของมัน: รหัสหลักแต่ละรหัส (Main ID และ New Main ID) แยกเงินและกระปุก Vault อิสระ
@@ -973,27 +1105,22 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
         const targetMainId = node.originMainId;
         let sumDirect = 0;
         let sumUnilevel = 0;
-        let sumVault = 0;
         for (const other of enrichedMap.values()) {
-          // รวมเฉพาะโหนดในสายงานของรหัสหลักนี้ (originMainId เดียวกัน)
           if (other.originMainId === targetMainId) {
             sumDirect += other.directRewardThisNode;
             sumUnilevel += other.unilevelRewardThisNode;
-            sumVault += other.vaultBalance;
           }
         }
-        node.directRewardAllNodes = sumDirect;
-        node.unilevelRewardAllNodes = sumUnilevel;
-        node.upgradeRankPool = sumVault;
-        node.newAutoIdPool = selectedRank <= 4 ? sumVault : 0;
-        node.newExtraIdPool = selectedRank >= 4 ? sumVault : 0;
+        node.directRewardAllNodes = Number(sumDirect.toFixed(4));
+        node.unilevelRewardAllNodes = Number(sumUnilevel.toFixed(4));
+        node.upgradeRankPool = lineageUpgradeVault.get(targetMainId) || 0;
+        node.newAutoIdPool = selectedRank <= 4 ? lineageAutoIdVault.get(targetMainId) || 0 : 0;
+        node.newExtraIdPool = selectedRank >= 5 ? lineageExtraIdVault.get(targetMainId) || 0 : 0;
         node.totalClonesCount = nodeCloneRoundCount.get(targetMainId) || 0;
-        // Auto ID ที่แตกจาก Vault ของสายงานรหัสหลักนี้
-        const autoIdsFromThisMain = Array.from(autoMainNodeIds).filter((aId) => {
-          const autoNode = enrichedMap.get(aId);
-          return autoNode && autoNode.directUplineNodeId === targetMainId;
-        }).length;
-        node.totalAutoIdCount = autoIdsFromThisMain;
+        node.totalAutoIdCount = mainNodeAutoIdSpawnCount.get(targetMainId) || 0;
+        node.totalExtraIdCount = lineageExtraIdSpawnCount.get(targetMainId) || 0;
+        node.familyPoolDirectFromLineage = lineageFamilyPoolDirectMap.get(targetMainId) || 0;
+        node.grossVaultFromLineage = lineageGrossVaultMap.get(targetMainId) || 0;
       }
 
       setOnChainNodesMap(enrichedMap);
@@ -1547,7 +1674,12 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
                 <span>
                   Vault:{' '}
                   <strong className="text-white">
-                    {node.vaultBalance.toFixed(2)}/{node.nextRankPrice}U
+                    {node.upgradeRankPool > 0
+                      ? `${node.upgradeRankPool.toFixed(2)}/${node.nextRankPrice}U`
+                      : selectedRank <= 4 &&
+                        (node.newAutoIdPool > 0 || node.totalAutoIdCount > 0 || node.id === 1)
+                      ? `${node.newAutoIdPool.toFixed(2)}/5U`
+                      : `${node.vaultBalance.toFixed(2)}/${node.nextRankPrice}U`}
                   </strong>
                 </span>
               </span>
@@ -1684,6 +1816,15 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
                 </span>
               </div>
 
+              {Boolean(node.familyPoolDirectFromLineage && node.familyPoolDirectFromLineage > 0) && (
+                <div className="flex items-center justify-between text-[10px] text-amber-300/90">
+                  <span>↳ โคลน #{node.originMainId} ลงซ้าย (เข้า Family Pool):</span>
+                  <span className="font-mono font-bold">
+                    {node.familyPoolDirectFromLineage?.toFixed(2)} U
+                  </span>
+                </div>
+              )}
+
               <div className="flex items-center justify-between pb-1.5 border-b border-slate-800/90">
                 <span className="text-slate-200 font-semibold">ยูนิเลเวล 15 ชั้น (สายรหัสนี้):</span>
                 <span className="font-mono font-extrabold text-indigo-300 text-xs sm:text-sm">
@@ -1706,6 +1847,12 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
                     {node.newAutoIdPool.toFixed(2)} U
                   </span>
                 </div>
+                {node.totalAutoIdCount > 0 && Boolean(node.grossVaultFromLineage) && (
+                  <div className="text-[10px] text-slate-400 text-right font-mono">
+                    (สะสม {node.grossVaultFromLineage?.toFixed(2)} U • ออก Auto ID -
+                    {(node.totalAutoIdCount * 5).toFixed(2)} U)
+                  </div>
+                )}
 
                 <div className="flex items-center justify-between">
                   <span className="text-rose-400 font-bold">New Extra ID Pool:</span>
