@@ -18,6 +18,7 @@ export interface InMemoryMatrixNode {
   rightChild: bigint;
   isClone: boolean;
   originMainId?: string;
+  directSponsorNodeId?: string;
 }
 
 export interface WalletNodeDetail {
@@ -448,15 +449,81 @@ export function findAutoIdAndExtraIdSlot(
 }
 
 /**
+ * ค้นหารหัสผู้แนะนำตรง (Sponsor Main Node ID) ของรหัสหลักนั้นๆ
+ * เช่น #5 มีผู้แนะนำคือ #2 -> คืนค่า 2n เพื่อให้โคลนของ #5 ไปต่อ #2 หรือโคลนของ #2 (#6)
+ */
+export function resolveSponsorNodeIdForMainNode(
+  rankNodes: RankNodesMap,
+  lineageMap: Map<string, CloneLineageMeta>,
+  originMainIdStr: string,
+  sponsorAddress: string
+): bigint {
+  if (!originMainIdStr || originMainIdStr === '0' || originMainIdStr === '1') {
+    return 1n;
+  }
+
+  const originNode = rankNodes[originMainIdStr];
+  if (originNode?.directSponsorNodeId && originNode.directSponsorNodeId !== '0') {
+    return BigInt(originNode.directSponsorNodeId);
+  }
+
+  const effectiveSponsorAddr = (
+    originNode?.directSponsor && originNode.directSponsor !== ethers.ZeroAddress
+      ? originNode.directSponsor
+      : sponsorAddress || ''
+  ).toLowerCase();
+
+  if (!effectiveSponsorAddr || effectiveSponsorAddr === ethers.ZeroAddress) {
+    return 1n;
+  }
+
+  const originNum = Number(originMainIdStr);
+
+  // 1. ไล่สายอัพไลน์ (parentId) ของรหัสหลักขึ้นไป ถ้าเจอโหนดที่เป็นของกระเป๋าผู้แนะนำ ให้ใช้ originMainId ของโหนดนั้นทันที (เช่น #5 อยู่ขวาของ #2 -> ได้ #2)
+  let currIdStr = originNode ? originNode.parentId.toString() : '0';
+  const visited = new Set<string>();
+  while (currIdStr && currIdStr !== '0' && !visited.has(currIdStr)) {
+    visited.add(currIdStr);
+    const anc = rankNodes[currIdStr];
+    if (!anc) break;
+    if ((anc.owner || '').toLowerCase() === effectiveSponsorAddr) {
+      const ancMeta = lineageMap.get(currIdStr);
+      const ancOriginStr = ancMeta ? ancMeta.originMainId : anc.originMainId || currIdStr;
+      if (Number(ancOriginStr) < originNum) {
+        return BigInt(ancOriginStr);
+      }
+    }
+    currIdStr = anc.parentId.toString();
+  }
+
+  // 2. หากไม่อยู่ในสายอัพไลน์โดยตรง ให้หารหัสหลักแรกของกระเป๋าผู้แนะนำที่เกิดก่อน originMainId
+  const candidateMains = Object.values(rankNodes)
+    .filter(
+      (n) =>
+        !n.isClone &&
+        (n.owner || '').toLowerCase() === effectiveSponsorAddr &&
+        Number(n.id) < originNum
+    )
+    .sort((a, b) => Number(a.id - b.id));
+
+  if (candidateMains.length > 0) {
+    return candidateMains[0].id;
+  }
+
+  return 1n;
+}
+
+/**
  * เงื่อนไขการวางตำแหน่งสำหรับ โคลนนิ่ง (Clone ID - Rebirth เมื่อเกิดลูกขวา):
  * แยกฟังก์ชันออกจาก New Auto ID และ Auto Extra ID
+ * โดยวางต่อผู้แนะนำตรงของรหัสหลักนั้น (targetSponsorNodeId เช่น #2) หรือโคลนนิ่งของผู้แนะนำตรงนั้น (#6)
  */
 export function findClonePlacementSlot(
   rankNodes: RankNodesMap,
   sponsorAddress: string,
-  originMainNodeId: number | bigint
+  targetSponsorNodeId: number | bigint
 ): { parentId: bigint; isLeft: boolean; targetType: 'main' | 'clone' | 'descendant'; targetNodeId: bigint } {
-  return findDirectSponsorOrCloneSlot(rankNodes, sponsorAddress, originMainNodeId);
+  return findDirectSponsorOrCloneSlot(rankNodes, sponsorAddress, targetSponsorNodeId);
 }
 
 // --- 3. ฟังก์ชันจำลองการเกิดรหัสโคลนนิ่งอัตโนมัติ (Recursive Right-Child Rebirth Clone) ---
@@ -493,13 +560,19 @@ function simulateRightChildCloneCascade(
     parentSponsor = parentOwner;
   }
 
-  // โคลนนิ่งใช้ฟังก์ชันวางตำแหน่งของโคลนนิ่งโดยเฉพาะ (แยกจาก New Auto ID / Auto Extra ID)
-  const effectiveOriginNodeId = BigInt(cloneOriginMainIdStr);
+  // แยกรหัสหลักของโคลน (cloneOriginMainIdStr เช่น #5) ออกจากรหัสผู้แนะนำของรหัสหลักนั้น (targetSponsorNodeId เช่น #2)
+  // เพื่อให้โคลนนิ่งของ #5 วิ่งไปต่อ #2 หรือโคลนนิ่งของ #2 (#6) ตามผู้แนะนำที่แท้จริง!
+  const targetSponsorNodeId = resolveSponsorNodeIdForMainNode(
+    rankNodes,
+    lineageMap,
+    cloneOriginMainIdStr,
+    parentSponsor
+  );
 
   const clonePlacement = findClonePlacementSlot(
     rankNodes,
     parentSponsor,
-    effectiveOriginNodeId
+    targetSponsorNodeId
   );
 
   state.nextNodeId += 1n;
@@ -515,6 +588,7 @@ function simulateRightChildCloneCascade(
     rightChild: 0n,
     isClone: true,
     originMainId: cloneOriginMainIdStr,
+    directSponsorNodeId: targetSponsorNodeId.toString(),
   };
 
   const targetParentNode = rankNodes[clonePlacement.parentId.toString()];
@@ -876,6 +950,8 @@ export async function previewOffChainSimulation(
       leftChild: 0n,
       rightChild: 0n,
       isClone: false,
+      originMainId: newIdStr,
+      directSponsorNodeId: String(sponsorNodeId || 1),
     };
 
     const applicantKey = (applicant.owner || '').toLowerCase();

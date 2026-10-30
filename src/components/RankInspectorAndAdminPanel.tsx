@@ -104,17 +104,10 @@ export const RankInspectorAndAdminPanel: React.FC<RankInspectorAndAdminPanelProp
       {/* 4. Rank Inspector */}
       <div className="bg-slate-900/90 border border-emerald-500/20 p-6 rounded-2xl shadow-[0_0_25px_rgba(16,185,129,0.12)] space-y-5">
         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-          <div>
-            <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-              <Search className="w-4 h-4 text-emerald-400" />
-              <span>{language === 'th' ? '4. Rank Inspector (ตรวจสอบแรงค์ 1-27)' : '4. Rank Inspector'}</span>
-            </h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              {language === 'th'
-                ? 'ตรวจสอบสถิติโหนดและกระปุกสะสม Upgrade Vault รายแรงค์ (1-27)'
-                : 'Inspect user node statistics per specific rank (1-27)'}
-            </p>
-          </div>
+          <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+            <Search className="w-4 h-4 text-emerald-400" />
+            <span>{language === 'th' ? '4. ตรวจสอบแรงค์ (Rank Inspector)' : '4. Rank Inspector'}</span>
+          </h2>
           <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs px-2.5 py-1 rounded-full font-mono">
             Rank {selectedInspectRank}
           </span>
@@ -186,13 +179,8 @@ export const RankInspectorAndAdminPanel: React.FC<RankInspectorAndAdminPanelProp
         <div className="border-b border-slate-800 pb-3">
           <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
             <ShieldAlert className="w-4 h-4 text-rose-400" />
-            <span>{language === 'th' ? '5. Admin Controls (สำหรับเจ้าของสัญญา)' : '5. Admin Controls'}</span>
+            <span>{language === 'th' ? '5. Admin Controls' : '5. Admin Controls'}</span>
           </h2>
-          <p className="text-xs text-slate-400 mt-0.5">
-            {language === 'th'
-              ? 'ฟังก์ชันเฉพาะผู้ดูแลระบบ (adminUpgradeRank ใน FractalFlowMatrix27.sol)'
-              : 'Restricted system owner functions (adminUpgradeRank)'}
-          </p>
         </div>
 
         <form onSubmit={handleAdminSubmit} className="space-y-3">
@@ -249,17 +237,10 @@ export const RankInspectorAndAdminPanel: React.FC<RankInspectorAndAdminPanelProp
       {/* 6. Smart Contract Address & Database Manager */}
       <div className="bg-slate-900/90 border border-indigo-500/30 p-6 rounded-2xl shadow-[0_0_25px_rgba(99,102,241,0.12)] space-y-4">
         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-          <div>
-            <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
-              <Database className="w-4 h-4 text-indigo-400" />
-              <span>{language === 'th' ? '6. จัดการที่อยู่ Smart Contract บน Database' : '6. Smart Contract Database Manager'}</span>
-            </h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              {language === 'th'
-                ? 'ระบบอ่านที่อยู่สัญญาจาก Database คุณสามารถแก้ไขเลข Smart Contract ได้ทันที'
-                : 'System reads contract address from database. You can update or switch contract anytime.'}
-            </p>
-          </div>
+          <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
+            <Database className="w-4 h-4 text-indigo-400" />
+            <span>{language === 'th' ? '6. จัดการที่อยู่ Smart Contract' : '6. Smart Contract Manager'}</span>
+          </h2>
           <span className="bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[10px] px-2.5 py-1 rounded-full font-mono flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
             <span>Database Active</span>

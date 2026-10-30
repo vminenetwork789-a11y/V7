@@ -47,6 +47,7 @@ export function useWeb3() {
   }, [usdtAddress]);
 
   const [account, setAccount] = useState<string | null>(null);
+  const [detectedBrowserWallet, setDetectedBrowserWallet] = useState<string | null>(null);
   const [chainId, setChainId] = useState<number | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [usdtBalance, setUsdtBalance] = useState<string>('0.00');
@@ -149,8 +150,9 @@ export function useWeb3() {
         console.warn('USDT contract call notice:', usdtErr);
       }
 
-      // Fetch backend profile & vaults
+      // Fetch backend profile & vaults as fallback only
       let backendVaults: any[] = [];
+      let backendProfileFallback: UserProfile | null = null;
       try {
         const res = await fetch(`/api/user/${userAddr}`, {
           headers: { Accept: 'application/json' },
@@ -160,17 +162,55 @@ export function useWeb3() {
           const data = await res.json();
           if (data.vaults) backendVaults = data.vaults;
           if (data.profile) {
-            setProfile({ ...data.profile, vaults: data.vaults || [] });
+            backendProfileFallback = { ...data.profile, vaults: data.vaults || [] };
           }
         }
       } catch {
         // Ignore backend error
       }
 
-      // Fetch on-chain UserProfile & Rank 1-5 Vaults from FractalFlowMatrix27.sol
+      // Fetch all Node IDs (Main IDs & Clone IDs) owned by this wallet in Rank 1 on-chain
+      let ownedMainIdsRank1: string[] = [];
+      let ownedCloneIdsRank1: string[] = [];
+      let ownedAllIdsRank1: string[] = [];
+      try {
+        const totalNodesR1 = Number(await matrixContract.totalNodesInRank(1));
+        if (totalNodesR1 > 0) {
+          const lowerWallet = userAddr.toLowerCase();
+          const nodeIds = Array.from({ length: totalNodesR1 }, (_, idx) => idx + 1);
+          const nodeRecords = await Promise.all(
+            nodeIds.map(async (id) => {
+              try {
+                const n = await matrixContract.rankNodes(1, id);
+                return {
+                  id: String(n.id ?? n[0]),
+                  owner: String(n.owner ?? n[1] ?? '').toLowerCase(),
+                  isClone: Boolean(n.isClone ?? n[6]),
+                };
+              } catch {
+                return null;
+              }
+            })
+          );
+          for (const item of nodeRecords) {
+            if (!item || item.id === '0') continue;
+            if (item.owner === lowerWallet) {
+              ownedAllIdsRank1.push(item.id);
+              if (item.isClone) {
+                ownedCloneIdsRank1.push(item.id);
+              } else {
+                ownedMainIdsRank1.push(item.id);
+              }
+            }
+          }
+        }
+      } catch {
+        // Ignore scan error
+      }
+
+      // Fetch on-chain UserProfile & Rank 1-27 Vaults from FractalFlowMatrix27.sol
       try {
         const profileData = await matrixContract.getUserProfile(userAddr);
-        // Fetch on-chain UserProfile & all Rank 1-27 Vaults from FractalFlowMatrix27.sol
         const onChainVaults = [];
         try {
           const rankIndices = Array.from({ length: 27 }, (_, i) => i + 1);
@@ -197,59 +237,63 @@ export function useWeb3() {
           // Fallback
         }
 
-        // Fetch all Node IDs (Main IDs & Clone IDs) owned by this wallet in Rank 1
-        let ownedMainIdsRank1: string[] = [];
-        let ownedCloneIdsRank1: string[] = [];
-        let ownedAllIdsRank1: string[] = [];
-        try {
-          const totalNodesR1 = Number(await matrixContract.totalNodesInRank(1));
-          if (totalNodesR1 > 0) {
-            const lowerWallet = userAddr.toLowerCase();
-            const nodeIds = Array.from({ length: totalNodesR1 }, (_, idx) => idx + 1);
-            const nodeRecords = await Promise.all(
-              nodeIds.map(async (id) => {
-                try {
-                  const n = await matrixContract.rankNodes(1, id);
-                  return {
-                    id: String(n.id ?? n[0]),
-                    owner: String(n.owner ?? n[1] ?? '').toLowerCase(),
-                    isClone: Boolean(n.isClone ?? n[6]),
-                  };
-                } catch {
-                  return null;
-                }
-              })
-            );
-            for (const item of nodeRecords) {
-              if (!item || item.id === '0') continue;
-              if (item.owner === lowerWallet) {
-                ownedAllIdsRank1.push(item.id);
-                if (item.isClone) {
-                  ownedCloneIdsRank1.push(item.id);
-                } else {
-                  ownedMainIdsRank1.push(item.id);
-                }
-              }
-            }
-          }
-        } catch {
-          // Ignore scan error
-        }
+        const isRegisteredOnChain =
+          Boolean(profileData.isRegistered) ||
+          Number(profileData.mainNodeIdRank1 || 0) > 0 ||
+          ownedAllIdsRank1.length > 0;
+
+        const resolvedMainId =
+          Number(profileData.mainNodeIdRank1 || 0) > 0
+            ? profileData.mainNodeIdRank1.toString()
+            : ownedMainIdsRank1[0] || ownedAllIdsRank1[0] || '0';
+
+        const resolvedLatestCloneId =
+          Number(profileData.latestCloneIdRank1 || 0) > 0
+            ? profileData.latestCloneIdRank1.toString()
+            : ownedCloneIdsRank1[ownedCloneIdsRank1.length - 1] || '0';
 
         setProfile({
-          isRegistered: Boolean(profileData.isRegistered),
-          sponsor: profileData.sponsor,
-          sponsorMainNodeId: profileData.sponsorMainNodeId.toString(),
-          currentMaxRank: Number(profileData.currentMaxRank),
-          mainNodeIdRank1: profileData.mainNodeIdRank1.toString(),
-          latestCloneIdRank1: profileData.latestCloneIdRank1.toString(),
-          ownedMainIdsRank1,
-          ownedCloneIdsRank1,
-          ownedAllIdsRank1,
-          vaults: onChainVaults.length > 0 ? onChainVaults : backendVaults,
+          isRegistered: isRegisteredOnChain,
+          sponsor: isRegisteredOnChain ? profileData.sponsor : ethers.ZeroAddress,
+          sponsorMainNodeId: isRegisteredOnChain ? profileData.sponsorMainNodeId.toString() : '0',
+          currentMaxRank: isRegisteredOnChain ? Math.max(1, Number(profileData.currentMaxRank || 1)) : 0,
+          mainNodeIdRank1: isRegisteredOnChain ? resolvedMainId : '0',
+          latestCloneIdRank1: isRegisteredOnChain ? resolvedLatestCloneId : '0',
+          ownedMainIdsRank1: isRegisteredOnChain ? ownedMainIdsRank1 : [],
+          ownedCloneIdsRank1: isRegisteredOnChain ? ownedCloneIdsRank1 : [],
+          ownedAllIdsRank1: isRegisteredOnChain ? ownedAllIdsRank1 : [],
+          vaults: isRegisteredOnChain ? (onChainVaults.length > 0 ? onChainVaults : backendVaults) : [],
         });
       } catch {
-        // Keep backend profile fallback
+        // Fallback when getUserProfile is unavailable: rely on ownedAllIdsRank1 scan
+        const isRegisteredByNodes = ownedAllIdsRank1.length > 0;
+        if (isRegisteredByNodes) {
+          setProfile({
+            isRegistered: true,
+            sponsor: backendProfileFallback?.sponsor || ethers.ZeroAddress,
+            sponsorMainNodeId: backendProfileFallback?.sponsorMainNodeId || '1',
+            currentMaxRank: backendProfileFallback?.currentMaxRank || 1,
+            mainNodeIdRank1: ownedMainIdsRank1[0] || ownedAllIdsRank1[0] || '1',
+            latestCloneIdRank1: ownedCloneIdsRank1[ownedCloneIdsRank1.length - 1] || '0',
+            ownedMainIdsRank1,
+            ownedCloneIdsRank1,
+            ownedAllIdsRank1,
+            vaults: backendVaults,
+          });
+        } else {
+          setProfile({
+            isRegistered: false,
+            sponsor: ethers.ZeroAddress,
+            sponsorMainNodeId: '0',
+            currentMaxRank: 0,
+            mainNodeIdRank1: '0',
+            latestCloneIdRank1: '0',
+            ownedMainIdsRank1: [],
+            ownedCloneIdsRank1: [],
+            ownedAllIdsRank1: [],
+            vaults: [],
+          });
+        }
       }
     } catch (err) {
       console.error('Error refreshing user profile data:', err);
@@ -312,6 +356,11 @@ export function useWeb3() {
     setIsConnecting(true);
     try {
       const { userAddr } = await ensureWalletAndBscTestnet();
+      try {
+        sessionStorage.setItem('f27_active_wallet', userAddr);
+      } catch {
+        // Ignore storage error
+      }
       await refreshUserData(userAddr);
     } catch (err: any) {
       console.error('Failed to connect wallet:', err);
@@ -327,7 +376,117 @@ export function useWeb3() {
     }
   };
 
+  const loginWithCustomInput = async (rawInput: string): Promise<boolean> => {
+    const trimmed: string = String(rawInput || '').trim();
+    if (!trimmed) return false;
+
+    setIsConnecting(true);
+    setTxState({
+      isLoading: false,
+      step: '',
+      txHash: null,
+      error: null,
+      successMessage: null,
+    });
+
+    try {
+      // Case 1: Wallet Address (0x...)
+      if (/^0x[a-fA-F0-9]{40}$/.test(trimmed) && ethers.isAddress(trimmed)) {
+        const checksumAddr = ethers.getAddress(trimmed);
+        setAccount(checksumAddr);
+        try {
+          sessionStorage.setItem('f27_active_wallet', checksumAddr);
+        } catch {
+          // Ignore
+        }
+        await refreshUserData(checksumAddr);
+        return true;
+      }
+
+      // Case 2: Node ID (#1, 1, 2, etc.)
+      const digitsOnly = trimmed.replace(/[^0-9]/g, '');
+      const nodeIdNum = parseInt(digitsOnly, 10);
+      if (Number.isFinite(nodeIdNum) && nodeIdNum >= 1) {
+        const matrixContract = new ethers.Contract(contractAddressRef.current, MATRIX_ABI, readOnlyBscProvider);
+        const totalNodesR1 = Number(await matrixContract.totalNodesInRank(1));
+        if (nodeIdNum > totalNodesR1) {
+          setTxState({
+            isLoading: false,
+            step: '',
+            txHash: null,
+            error: `ยังไม่พบรหัสสมาชิก #${nodeIdNum} ในสัญญาปัจจุบัน (ปัจจุบันมีทั้งหมด ${totalNodesR1} รหัส)`,
+            successMessage: null,
+          });
+          return false;
+        }
+        const nodeData = await matrixContract.rankNodes(1, nodeIdNum);
+        const ownerAddr = String(nodeData.owner ?? nodeData[1] ?? '');
+        if (!ownerAddr || ownerAddr === ethers.ZeroAddress) {
+          setTxState({
+            isLoading: false,
+            step: '',
+            txHash: null,
+            error: `ไม่พบเจ้าของกระเป๋าสำหรับรหัสสมาชิก #${nodeIdNum}`,
+            successMessage: null,
+          });
+          return false;
+        }
+        const checksumAddr = ethers.getAddress(ownerAddr);
+        setAccount(checksumAddr);
+        try {
+          sessionStorage.setItem('f27_active_wallet', checksumAddr);
+        } catch {
+          // Ignore
+        }
+        await refreshUserData(checksumAddr);
+        return true;
+      }
+
+      setTxState({
+        isLoading: false,
+        step: '',
+        txHash: null,
+        error: 'กรุณากรอกที่อยู่กระเป๋า (0x...) หรือรหัสสมาชิก (เช่น 1, 2) ที่ถูกต้อง',
+        successMessage: null,
+      });
+      return false;
+    } catch (err: any) {
+      setTxState({
+        isLoading: false,
+        step: '',
+        txHash: null,
+        error: err?.message || 'ไม่สามารถตรวจสอบข้อมูลกระเป๋าได้',
+        successMessage: null,
+      });
+      return false;
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  const loginWithDemoUnregisteredWallet = async () => {
+    setIsConnecting(true);
+    try {
+      const randomWallet = ethers.Wallet.createRandom();
+      const newAddr = randomWallet.address;
+      setAccount(newAddr);
+      try {
+        sessionStorage.setItem('f27_active_wallet', newAddr);
+      } catch {
+        // Ignore
+      }
+      await refreshUserData(newAddr);
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
   const disconnectWallet = () => {
+    try {
+      sessionStorage.removeItem('f27_active_wallet');
+    } catch {
+      // Ignore
+    }
     setAccount(null);
     setProfile(null);
     setUsdtBalance('0.00');
@@ -380,93 +539,33 @@ export function useWeb3() {
   }, [account, refreshUserData]);
 
   useEffect(() => {
-    const loadReadOnlyOnChainOverview = async () => {
-      try {
-        const targetContract = contractAddressRef.current;
-        const matrixContract = new ethers.Contract(targetContract, MATRIX_ABI, readOnlyBscProvider);
-        const totalNodesR1 = Number(await matrixContract.totalNodesInRank(1));
-        const node1 = await matrixContract.rankNodes(1, 1);
-        const rootOwner = String(node1.owner ?? node1[1] ?? '');
-
-        if (rootOwner && rootOwner !== ethers.ZeroAddress) {
-          const profileData = await matrixContract.getUserProfile(rootOwner);
-          const onChainVaults: any[] = [];
-          try {
-            const rankIndices = Array.from({ length: 27 }, (_, i) => i + 1);
-            const rankInfoResults = await Promise.allSettled(
-              rankIndices.map((r) => matrixContract.getUserRankInfo(rootOwner, r))
-            );
-            for (let i = 0; i < rankInfoResults.length; i++) {
-              const res = rankInfoResults[i];
-              if (res.status === 'fulfilled' && res.value) {
-                const rank = i + 1;
-                const rankInfo = res.value;
-                onChainVaults.push({
-                  id: `v-chain-${rank}`,
-                  owner: rootOwner,
-                  rank,
-                  balance: Number(ethers.formatUnits(rankInfo[2] ?? rankInfo.upgradeVaultBalance, 6)).toFixed(2),
-                  firstNodeId: (rankInfo[0] ?? rankInfo.firstNodeId).toString(),
-                  latestNodeId: (rankInfo[1] ?? rankInfo.latestNodeId).toString(),
-                  updatedAt: new Date().toISOString(),
-                });
-              }
-            }
-          } catch {
-            // Ignore
-          }
-
-          const allMainIds: string[] = [];
-          const allCloneIds: string[] = [];
-          const allIds: string[] = [];
-          for (let i = 1; i <= Math.min(totalNodesR1, 50); i++) {
-            try {
-              const n = await matrixContract.rankNodes(1, i);
-              const idStr = String(n.id ?? n[0]);
-              const isClone = Boolean(n.isClone ?? n[6]);
-              if (idStr && idStr !== '0') {
-                allIds.push(idStr);
-                if (isClone) allCloneIds.push(idStr);
-                else allMainIds.push(idStr);
-              }
-            } catch {
-              // Ignore
-            }
-          }
-
-          setProfile((prev) =>
-            prev || {
-              isRegistered: Boolean(profileData.isRegistered),
-              sponsor: profileData.sponsor,
-              sponsorMainNodeId: profileData.sponsorMainNodeId.toString(),
-              currentMaxRank: Number(profileData.currentMaxRank),
-              mainNodeIdRank1: profileData.mainNodeIdRank1.toString(),
-              latestCloneIdRank1:
-                totalNodesR1 > 1
-                  ? String(totalNodesR1)
-                  : profileData.latestCloneIdRank1.toString(),
-              ownedMainIdsRank1: allMainIds,
-              ownedCloneIdsRank1: allCloneIds,
-              ownedAllIdsRank1: allIds,
-              vaults: onChainVaults,
-            }
-          );
-        }
-      } catch {
-        // Ignore read-only overview error
-      }
-    };
+    let savedSessionWallet: string | null = null;
+    try {
+      savedSessionWallet = sessionStorage.getItem('f27_active_wallet');
+    } catch {
+      savedSessionWallet = null;
+    }
 
     if (!window.ethereum) {
-      loadReadOnlyOnChainOverview();
+      if (savedSessionWallet && ethers.isAddress(savedSessionWallet)) {
+        setAccount(savedSessionWallet);
+        refreshUserData(savedSessionWallet);
+      }
       return;
     }
 
     const handleAccountsChanged = (accounts: string[]) => {
       if (accounts.length > 0) {
+        setDetectedBrowserWallet(accounts[0]);
         setAccount(accounts[0]);
+        try {
+          sessionStorage.setItem('f27_active_wallet', accounts[0]);
+        } catch {
+          // Ignore
+        }
         refreshUserData(accounts[0]);
       } else {
+        setDetectedBrowserWallet(null);
         disconnectWallet();
       }
     };
@@ -490,14 +589,21 @@ export function useWeb3() {
         setChainId(Number(network.chainId));
         if (accounts.length > 0) {
           const userAddr = accounts[0].address;
-          setAccount(userAddr);
-          refreshUserData(userAddr);
-        } else {
-          await loadReadOnlyOnChainOverview();
+          setDetectedBrowserWallet(userAddr);
+          if (savedSessionWallet && ethers.isAddress(savedSessionWallet)) {
+            setAccount(savedSessionWallet);
+            refreshUserData(savedSessionWallet);
+          }
+        } else if (savedSessionWallet && ethers.isAddress(savedSessionWallet)) {
+          setAccount(savedSessionWallet);
+          refreshUserData(savedSessionWallet);
         }
       } catch (e) {
         console.warn('Initial web3 check silent notice:', e);
-        await loadReadOnlyOnChainOverview();
+        if (savedSessionWallet && ethers.isAddress(savedSessionWallet)) {
+          setAccount(savedSessionWallet);
+          refreshUserData(savedSessionWallet);
+        }
       }
     };
     checkInitial();
@@ -1370,7 +1476,19 @@ export function useWeb3() {
           let formattedNextPrice = nextPriceNum > 0 ? `${nextPriceNum.toFixed(2)} USDT` : 'Max Rank';
 
           try {
-            formattedVault = Number(ethers.formatUnits(rankInfo[2], 6)).toFixed(2);
+            let effectiveVaultBn: bigint = BigInt(rankInfo[2] ?? 0);
+            const firstId = Number(rankInfo[0] ?? 0);
+            if (firstId > 0) {
+              try {
+                const nodeVaultBn: bigint = await matrixContract.nodeUpgradeVault(rankNum, firstId);
+                if (nodeVaultBn < effectiveVaultBn) {
+                  effectiveVaultBn = nodeVaultBn;
+                }
+              } catch {
+                // Fallback
+              }
+            }
+            formattedVault = Number(ethers.formatUnits(effectiveVaultBn, 6)).toFixed(2);
             if (rankInfo[3] > 0n) {
               formattedNextPrice = `${Number(ethers.formatUnits(rankInfo[3], 6)).toFixed(2)} USDT`;
             } else {
@@ -1602,6 +1720,7 @@ export function useWeb3() {
     updateSmartContractAddress,
     resetSmartContractAddress,
     account,
+    detectedBrowserWallet,
     chainId,
     isBscTestnet,
     isConnecting,
@@ -1612,6 +1731,8 @@ export function useWeb3() {
     isLoadingProfile,
     txState,
     connectWallet,
+    loginWithCustomInput,
+    loginWithDemoUnregisteredWallet,
     disconnectWallet,
     switchToBscTestnet,
     refreshUserData: () => account && refreshUserData(account),

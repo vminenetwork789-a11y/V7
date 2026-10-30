@@ -146,7 +146,8 @@ export const DeployContractModal: React.FC<DeployContractModalProps> = ({
               <code className="text-amber-300">vault1To4 &gt; vaultTrailing5</code> เป็นเท็จเสมอ) ให้คำนวณยอดสะสม Vault 1-4 เพื่อออกรหัสหลักใหม่ (New Main ID) อัตโนมัติทุกๆ 5 USDT
             </li>
             <li>
-              แก้ไข <code className="text-emerald-300">_triggerRightChildClone</code> ให้รหัสโคลนนิ่งที่เกิดจากลูกขวาของ New Main ID ยึดตามสายรหัสหลัก (<code className="text-emerald-300">_parentId</code>) นั้นโดยตรง
+              แก้ไข <code className="text-emerald-300">_triggerRightChildClone</code> และ{' '}
+              <code className="text-emerald-300">_createAndPlaceCloneNode</code> ให้แยกรหัสหลักของโคลน (<code className="text-emerald-300">cloneOriginMainId</code> เช่น #5) ออกจากรหัสผู้แนะนำ (<code className="text-emerald-300">targetSponsorNodeId</code> เช่น #2) เพื่อให้โคลนนิ่งของ #5 วิ่งไปต่อผู้แนะนำ #2 หรือโคลนของ #2 (#6)
             </li>
           </ul>
         </div>

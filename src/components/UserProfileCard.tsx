@@ -104,9 +104,6 @@ export const UserProfileCard: React.FC<UserProfileCardProps> = ({
           >
             Rank {profile?.currentMaxRank || 1} / 27
           </h3>
-          <p className="text-[11px] sm:text-xs text-slate-400 mt-1 truncate">
-            {language === 'th' ? 'ระดับแรงค์ที่เปิดใช้งาน' : 'Active Rank Tier'}
-          </p>
         </div>
 
         {/* Card 3: Rank 1 Node Info */}
@@ -147,9 +144,6 @@ export const UserProfileCard: React.FC<UserProfileCardProps> = ({
               </>
             )}
           </p>
-          <div className="mt-1 pt-1 border-t border-teal-500/15 text-[10px] text-teal-300/90 font-medium">
-            {language === 'th' ? '✓ เงินและ Vault แยกอิสระของใครของมัน' : '✓ Independent Money & Vault per Main ID'}
-          </div>
         </div>
 
         {/* Card 4: Vault Balance */}
@@ -166,9 +160,6 @@ export const UserProfileCard: React.FC<UserProfileCardProps> = ({
           >
             {selectedVaultBalance}
           </h3>
-          <p className="text-[11px] sm:text-xs text-slate-400 mt-1 truncate">
-            {language === 'th' ? 'กระปุกสะสมอัปเกรด' : 'Upgrade Savings Box'}
-          </p>
         </div>
       </div>
 

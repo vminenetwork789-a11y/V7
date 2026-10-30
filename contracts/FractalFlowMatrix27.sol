@@ -568,6 +568,7 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
     mapping(uint8 => mapping(uint256 => uint256)) public nodeUpgradeVault; // แยกกระปุก Vault อิสระรายโหนด (เงินแยกของใครของมัน)
     mapping(uint8 => mapping(uint256 => uint256)) public nodeOriginMainId; // รหัสหลักต้นสังกัดของแต่ละโหนด (เช่น โคลน #8 -> รหัสหลัก #2, โคลน #24 -> รหัสหลัก #6)
     mapping(uint8 => mapping(uint256 => uint256)) public mainNodeLatestCloneId; // โคลนนิ่งของแต่ละรหัสหลักแยกอิสระ (เช่น #2 -> #8, #6 -> #24)
+    mapping(uint8 => mapping(uint256 => uint256)) public nodeDirectSponsorNodeId; // รหัสผู้แนะนำตรง (Sponsor Node ID) ของแต่ละโหนด (เช่น #5 มีผู้แนะนำคือ #2)
     mapping(address => UserAccount) private users;
 
     event UserRegistered(address indexed user, address indexed sponsor, uint256 indexed sponsorNodeId, uint256 mainNodeId);
@@ -623,6 +624,7 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
             users[_rootUser].firstNodeId[r] = 1;
             users[_rootUser].latestNodeId[r] = 1;
             nodeOriginMainId[r][1] = 1;
+            nodeDirectSponsorNodeId[r][1] = 0;
 
             emit NodeCreated(r, 1, _rootUser, address(0), 0, true, false, false);
         }
@@ -838,6 +840,7 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
                         rem = 0;
                     }
                 }
+                _clearVaultsForRange(nodeOwner, 1, 4, totalDeduct);
 
                 for (uint256 i = 0; i < count; i++) {
                     _createAndPlaceAutoNode(1, nodeOwner, nodeOwner, originMainId, false);
@@ -952,6 +955,7 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
 
             if (!isClone) {
                 nodeOriginMainId[1][newNodeId] = newNodeId;
+                nodeDirectSponsorNodeId[1][newNodeId] = _sponsorNodeId;
                 if (users[msg.sender].firstNodeId[1] == 0) {
                     users[msg.sender].firstNodeId[1] = newNodeId;
                 }
@@ -1103,6 +1107,7 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
 
         if (!_isClone && !_isExtraId) {
             nodeOriginMainId[_rank][newNodeId] = newNodeId;
+            nodeDirectSponsorNodeId[_rank][newNodeId] = effectiveSponsorNodeId;
             if (users[_owner].firstNodeId[_rank] == 0) {
                 users[_owner].firstNodeId[_rank] = newNodeId;
             }
@@ -1112,6 +1117,7 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
                 originId = effectiveSponsorNodeId;
             }
             nodeOriginMainId[_rank][newNodeId] = originId;
+            nodeDirectSponsorNodeId[_rank][newNodeId] = effectiveSponsorNodeId;
             mainNodeLatestCloneId[_rank][originId] = newNodeId;
         } else if (_isExtraId) {
             uint256 originId = nodeOriginMainId[_rank][effectiveSponsorNodeId];
@@ -1119,12 +1125,68 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
                 originId = effectiveSponsorNodeId;
             }
             nodeOriginMainId[_rank][newNodeId] = originId;
+            nodeDirectSponsorNodeId[_rank][newNodeId] = originId;
         }
         if (!_isExtraId) {
             users[_owner].latestNodeId[_rank] = newNodeId;
         }
 
         emit NodeCreated(_rank, newNodeId, _owner, _sponsor, parentId, isLeft, _isClone, _isExtraId);
+
+        if (isLeft) {
+            _distributeLeftChildRewards(_rank, newNodeId, parentId, _owner);
+        } else {
+            _triggerRightChildClone(_rank, parentId, _isExtraId);
+        }
+
+        return newNodeId;
+    }
+
+    /// @notice สร้างและวางตำแหน่งสำหรับรหัสโคลนนิ่ง (Clone ID - Rebirth เมื่อเกิดลูกขวา)
+    /// แยกรหัสหลักของโคลน (_cloneOriginMainId เช่น #5) ออกจากรหัสผู้แนะนำของรหัสหลักนั้น (_targetSponsorNodeId เช่น #2)
+    /// ทำให้โคลนของ #5 (ซึ่งมีผู้แนะนำคือ #2) วิ่งไปต่อผู้แนะนำ #2 หรือโคลนของ #2 (#6) อย่างถูกต้อง!
+    function _createAndPlaceCloneNode(
+        uint8 _rank,
+        address _owner,
+        address _sponsor,
+        uint256 _cloneOriginMainId,
+        uint256 _targetSponsorNodeId,
+        bool _isExtraId
+    ) internal returns (uint256) {
+        uint256 effectiveSponsorNodeId = _targetSponsorNodeId;
+        if (effectiveSponsorNodeId == 0) {
+            effectiveSponsorNodeId = 1;
+        }
+
+        // ค้นหาตำแหน่งวางโคลนโดยยึดตามผู้แนะนำของโหนดนั้น (_targetSponsorNodeId เช่น #2) และโคลนของผู้แนะนำ (#6)
+        (uint256 parentId, bool isLeft) = _findClonePlacement(_rank, _sponsor, effectiveSponsorNodeId);
+
+        uint256 newNodeId = ++totalNodesInRank[_rank];
+        rankNodes[_rank][newNodeId] = MatrixNode({
+            id: newNodeId,
+            owner: _owner,
+            directSponsor: _sponsor,
+            parentId: parentId,
+            leftChild: 0,
+            rightChild: 0,
+            isClone: true,
+            isExtraId: _isExtraId
+        });
+
+        if (isLeft) {
+            rankNodes[_rank][parentId].leftChild = newNodeId;
+        } else {
+            rankNodes[_rank][parentId].rightChild = newNodeId;
+        }
+
+        // ผูกสายตระกูลโคลนเข้ากับรหัสหลักต้นสังกัดของตัวเอง (_cloneOriginMainId เช่น #5)
+        uint256 originId = _cloneOriginMainId != 0 ? _cloneOriginMainId : newNodeId;
+        nodeOriginMainId[_rank][newNodeId] = originId;
+        nodeDirectSponsorNodeId[_rank][newNodeId] = effectiveSponsorNodeId;
+        mainNodeLatestCloneId[_rank][originId] = newNodeId;
+        users[_owner].latestNodeId[_rank] = newNodeId;
+
+        emit NodeCreated(_rank, newNodeId, _owner, _sponsor, parentId, isLeft, true, _isExtraId);
 
         if (isLeft) {
             _distributeLeftChildRewards(_rank, newNodeId, parentId, _owner);
@@ -1173,20 +1235,23 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
             rankNodes[_rank][parentId].rightChild = newNodeId;
         }
 
+        uint256 originId = nodeOriginMainId[_rank][effectiveSponsorNodeId];
+        if (originId == 0) {
+            originId = effectiveSponsorNodeId;
+        }
+
         if (!_isExtraId) {
-            // New Auto ID เป็นรหัสหลักใหม่ในตัวเอง
+            // New Auto ID เป็นรหัสหลักใหม่ในตัวเอง โดยมีผู้แนะนำคือรหัสหลักต้นสังกัด (originId)
             nodeOriginMainId[_rank][newNodeId] = newNodeId;
+            nodeDirectSponsorNodeId[_rank][newNodeId] = originId;
             if (users[_owner].firstNodeId[_rank] == 0) {
                 users[_owner].firstNodeId[_rank] = newNodeId;
             }
             users[_owner].latestNodeId[_rank] = newNodeId;
         } else {
             // Auto Extra ID ผูกตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId)
-            uint256 originId = nodeOriginMainId[_rank][effectiveSponsorNodeId];
-            if (originId == 0) {
-                originId = effectiveSponsorNodeId;
-            }
             nodeOriginMainId[_rank][newNodeId] = originId;
+            nodeDirectSponsorNodeId[_rank][newNodeId] = originId;
         }
 
         emit NodeCreated(_rank, newNodeId, _owner, _sponsor, parentId, isLeft, false, _isExtraId);
@@ -1226,20 +1291,7 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
         if (mainNode.rightChild == 0) return (sponsorMainId, false);
 
         // ขั้นตอนที่ 2: จับคู่โคลนตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId) เท่านั้น!
-        // ตรวจโคลนล่าสุดของรหัสหลักนี้ก่อน โดยต้องยืนยันว่า nodeOriginMainId == sponsorMainId
-        uint256 latestCloneId = mainNodeLatestCloneId[_rank][sponsorMainId];
-        if (
-            latestCloneId != 0 &&
-            latestCloneId != sponsorMainId &&
-            rankNodes[_rank][latestCloneId].isClone &&
-            nodeOriginMainId[_rank][latestCloneId] == sponsorMainId
-        ) {
-            MatrixNode storage latestClone = rankNodes[_rank][latestCloneId];
-            if (latestClone.leftChild == 0) return (latestCloneId, true);
-            if (latestClone.rightChild == 0) return (latestCloneId, false);
-        }
-
-        // สแกนหาโคลนนิ่งในผังที่มี originMainId === sponsorMainId เท่านั้น (ไม่ข้ามไปโคลนของรหัสหลักอื่นในกระเป๋าเดียวกัน)
+        // สแกนหาโคลนนิ่งในผังที่มี originMainId === sponsorMainId ตามลำดับเกิดก่อน-หลัง (ซ้ายว่างลงซ้าย, ขวาว่างลงขวา)
         uint256 total = totalNodesInRank[_rank];
         for (uint256 id = 1; id <= total; id++) {
             MatrixNode storage candidate = rankNodes[_rank][id];
@@ -1255,13 +1307,13 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
     }
 
     /// @notice ฟังก์ชันวางตำแหน่งสำหรับโคลนนิ่ง (Clone ID - Rebirth):
-    /// ขั้นตอนที่ 1: ติดตัวรหัสหลักต้นสังกัด (originMainId) - ซ้ายว่างลงซ้าย, ขวาว่างลงขวา
-    /// ขั้นตอนที่ 2: ติดตัวโคลนของรหัสหลักนั้น (mainNodeLatestCloneId) - ซ้ายโคลนว่างลงซ้ายโคลน, ขวาโคลนว่างลงขวาโคลน
+    /// ขั้นตอนที่ 1: ติดตัวผู้แนะนำของรหัสหลักนั้น (_targetSponsorNodeId เช่น #2) - ซ้ายว่างลงซ้าย, ขวาว่างลงขวา
+    /// ขั้นตอนที่ 2: ติดตัวโคลนของผู้แนะนำนั้น (โคลนของ #2 คือ #6) - ซ้ายโคลนว่างลงซ้ายโคลน, ขวาโคลนว่างลงขวาโคลน
     function _findClonePlacement(uint8 _rank, address _sponsor, uint256 _sponsorNodeId) internal view returns (uint256 parentId, bool isLeft) {
         return _findDirectAndClonePlacement(_rank, _sponsor, _sponsorNodeId);
     }
 
-    /// @notice ฟังก์ชันวางตำแหน่งสำหรับสายงานผู้แนะนำตรง (Direct Sponsor Line - รอบ 1)
+    /// @notice ฟังก์ชันวางตำแหน่งสำหรับสายงานผู้แนะนำตรง (Direct Sponsor Line) และโคลนนิ่ง
     function _findDirectAndClonePlacement(uint8 _rank, address _sponsor, uint256 _sponsorNodeId) internal view returns (uint256 parentId, bool isLeft) {
         uint256 primaryNodeId = _sponsorNodeId;
         if (primaryNodeId == 0) {
@@ -1276,24 +1328,23 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
             originMainId = primaryNodeId;
         }
 
-        // ขั้นตอนที่ 1: ติดตัวผู้แนะนำ (Primary Sponsor Node)
+        // ขั้นตอนที่ 1: ติดตัวผู้แนะนำ (Primary Sponsor Node เช่น #2) ซ้ายก่อน ขวาตาม
         MatrixNode storage primaryNode = rankNodes[_rank][originMainId];
         if (primaryNode.leftChild == 0) return (originMainId, true);
         if (primaryNode.rightChild == 0) return (originMainId, false);
 
-        // ขั้นตอนที่ 2: ติดตัวโคลนของรหัสหลักนั้นโดยเฉพาะ (ไม่ข้ามไปโคลนของรหัสหลักอื่นในกระเป๋าเดียวกัน)
-        uint256 latestCloneId = mainNodeLatestCloneId[_rank][originMainId];
-        if (
-            latestCloneId != 0 &&
-            latestCloneId != originMainId &&
-            nodeOriginMainId[_rank][latestCloneId] == originMainId
-        ) {
-            MatrixNode storage latestNode = rankNodes[_rank][latestCloneId];
-            if (latestNode.leftChild == 0) return (latestCloneId, true);
-            if (latestNode.rightChild == 0) return (latestCloneId, false);
+        // ขั้นตอนที่ 2: ติดตัวโคลนของผู้แนะนำนั้นโดยเฉพาะ (เช่น ผู้แนะนำคือ #2 -> เช็คโคลนของ #2 คือ #6 ซ้ายก่อน ขวาตาม)
+        uint256 total = totalNodesInRank[_rank];
+        for (uint256 id = 1; id <= total; id++) {
+            MatrixNode storage candidate = rankNodes[_rank][id];
+            if (!candidate.isClone) continue;
+            if (nodeOriginMainId[_rank][id] == originMainId) {
+                if (candidate.leftChild == 0) return (id, true);
+                if (candidate.rightChild == 0) return (id, false);
+            }
         }
 
-        // ถ้าเต็มทั้งผู้แนะนำและโคลนของรหัสหลักนั้น ให้ค้นหาช่องว่างที่ตื้นที่สุดใต้รหัสหลักนั้น
+        // ขั้นตอนที่ 3: ถ้าเต็มทั้งผู้แนะนำและโคลนของผู้แนะนำ ให้ค้นหาช่องว่างที่ตื้นที่สุดใต้ผู้แนะนำนั้น
         return _findFirstAvailableUnder(_rank, originMainId);
     }
 
@@ -1371,7 +1422,10 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
             usdt.safeTransfer(familyPool, directReward);
             emit RewardDistributed(_fromNodeId, 0, familyPool, _rank, "DIRECT_ID1_CLONE_FAMILY_POOL", directReward);
         } else {
-            uint256 sponsorNodeId = users[sponsor].firstNodeId[_rank];
+            uint256 sponsorNodeId = nodeDirectSponsorNodeId[_rank][_fromNodeId];
+            if (sponsorNodeId == 0) {
+                sponsorNodeId = users[sponsor].firstNodeId[_rank];
+            }
             if (sponsorNodeId == 0) {
                 sponsorNodeId = users[sponsor].latestNodeId[_rank];
             }
@@ -1454,13 +1508,32 @@ contract FractalFlowMatrix27 is ReentrancyGuard, Ownable {
             parentSponsor = parentOwner;
         }
 
-        // ใช้โหนดที่เกิดลูกขวา (_parentId) เป็นสายโหนดต้นทางสำหรับวางโคลนนิ่งของรหัสหลักนั้นโดยตรง
-        uint256 sponsorNodeId = _parentId;
-        if (sponsorNodeId == 0) {
-            sponsorNodeId = users[parentOwner].firstNodeId[_rank];
+        // 1. รหัสหลักต้นสังกัดของโคลนที่จะเกิด (เช่น โหนด #5 เกิดลูกขวา -> รหัสหลักของโคลนคือ #5)
+        uint256 cloneOriginMainId = nodeOriginMainId[_rank][_parentId];
+        if (cloneOriginMainId == 0) {
+            cloneOriginMainId = _parentId;
         }
 
-        _createAndPlaceNode(_rank, parentOwner, parentSponsor, sponsorNodeId, true, _isExtraId);
+        // 2. รหัสผู้แนะนำของรหัสหลักนั้น (เช่น รหัสหลัก #5 มีผู้แนะนำคือ #2 -> โคลนของ #5 ต้องไปต่อ #2 หรือโคลนของ #2 คือ #6!)
+        uint256 targetSponsorNodeId = nodeDirectSponsorNodeId[_rank][cloneOriginMainId];
+        if (targetSponsorNodeId == 0) {
+            targetSponsorNodeId = nodeDirectSponsorNodeId[_rank][_parentId];
+        }
+        if (targetSponsorNodeId == 0) {
+            if (cloneOriginMainId == 1) {
+                targetSponsorNodeId = 1;
+            } else {
+                targetSponsorNodeId = users[parentSponsor].firstNodeId[_rank];
+                if (targetSponsorNodeId == 0 || targetSponsorNodeId == cloneOriginMainId) {
+                    targetSponsorNodeId = users[parentOwner].sponsorMainNodeId;
+                }
+                if (targetSponsorNodeId == 0) {
+                    targetSponsorNodeId = 1;
+                }
+            }
+        }
+
+        _createAndPlaceCloneNode(_rank, parentOwner, parentSponsor, cloneOriginMainId, targetSponsorNodeId, _isExtraId);
     }
 
     function _checkAndProcessAutoUpgrade(address _user, uint8 _currentRank, uint256 _triggerNodeId) internal {

@@ -353,18 +353,10 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
             </span>
             <h3 className="text-base sm:text-lg font-bold text-white">
               {language === 'th'
-                ? 'สมัครสมาชิก (Matrix Registration - Rank 1)'
+                ? 'สมัครสมาชิก (Rank 1)'
                 : '1. Matrix Registration (Rank 1)'}
             </h3>
-            <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-mono">
-              Auto-Placement BFS
-            </span>
           </div>
-          <p className="text-xs text-slate-400 mt-1">
-            {language === 'th'
-              ? 'สมัครเข้าผัง Rank 1 บน BNB Smart Chain Testnet (5 USDT) • ระบบค้นหาตำแหน่งที่จะลงให้อัตโนมัติ และดึงข้อมูล ID ของกระเป๋า'
-              : 'Register Rank 1 on BNB Smart Chain Testnet (5 USDT) • Automatic Binary Tree Placement & Wallet ID Fetcher'}
-          </p>
         </div>
 
         <div className="text-right shrink-0 bg-slate-950/80 px-3.5 py-2 rounded-xl border border-slate-800">
@@ -421,9 +413,7 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
           <div className="flex items-center gap-2 flex-wrap">
             <Hash className="w-4 h-4 text-indigo-400 shrink-0" />
             <span className="text-xs font-bold text-indigo-200">
-              {language === 'th'
-                ? 'ข้อมูล ID ของกระเป๋าคุณบนเชน (Wallet Node IDs - คลิกเพื่อเลือกเป็นผู้แนะนำ):'
-                : 'Your Wallet Node IDs on Chain (Click to Select as Sponsor):'}
+              {language === 'th' ? 'ID ของกระเป๋าคุณ:' : 'Your Wallet IDs:'}
             </span>
             {account && (
               <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-slate-900 text-slate-300 border border-slate-700">
@@ -526,13 +516,10 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
           )
         ) : (
           <div className="space-y-2">
-            <div className="text-xs text-slate-400">
-              เชื่อมต่อกระเป๋า MetaMask เพื่อดึงรหัสโหนด (ID) ของกระเป๋าคุณอัตโนมัติ หรือคลิกเลือกรหัสโหนดที่มีอยู่จริงบนเชนด้านล่าง:
-            </div>
             {allOnChainNodes.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[11px] text-emerald-300 font-semibold mr-1">
-                  โหนดบนเชนทั้งหมดใน Rank 1 ({allOnChainNodes.length} รหัส):
+                  โหนดบนเชน ({allOnChainNodes.length} รหัส):
                 </span>
                 {allOnChainNodes.map((n) => {
                   const isSelected = Number(n.id) === sponsorNodeId;
@@ -569,9 +556,7 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
           <div className="sm:col-span-2">
             <label className="text-xs font-semibold text-slate-300 mb-1.5 flex items-center justify-between gap-2 flex-wrap">
               <span>
-                {language === 'th'
-                  ? 'รหัสโหนดผู้แนะนำ (Sponsor Node ID หรือวางกระเป๋า 0x...):'
-                  : 'Sponsor Node ID (or paste 0x Wallet):'}
+                {language === 'th' ? 'รหัสผู้แนะนำ (Sponsor ID):' : 'Sponsor Node ID:'}
               </span>
               <div className="flex items-center gap-1.5 flex-wrap">
                 {myMainNodes.length > 0 ? (
@@ -684,9 +669,7 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
             <div className="flex items-center gap-1.5 text-xs font-bold text-amber-300">
               <Compass className="w-4 h-4 text-amber-400 shrink-0" />
               <span>
-                {language === 'th'
-                  ? 'ระบบค้นหาตำแหน่งที่จะลงออโต้ (Auto-Placement Finder):'
-                  : 'Auto-Placement Mode:'}
+                {language === 'th' ? 'โหมดวางตำแหน่ง:' : 'Placement Mode:'}
               </span>
             </div>
 
@@ -700,7 +683,7 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
                     : 'bg-slate-900 text-slate-400 hover:text-white border-slate-800'
                 }`}
               >
-                🎯 ติดตัวผู้แนะนำ / โคลนนิ่งผู้แนะนำ (ซ้าย→ขวา) [ค่าเริ่มต้น]
+                🎯 ติดตัว / โคลนผู้แนะนำ
               </button>
               <button
                 type="button"
@@ -711,7 +694,7 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
                     : 'bg-slate-900 text-slate-400 hover:text-white border-slate-800'
                 }`}
               >
-                🤖 ออโต้ใต้ผู้แนะนำ #{sponsorNodeId} (ซ้าย→ขวา)
+                🤖 ออโต้ใต้ #{sponsorNodeId}
               </button>
               <button
                 type="button"
@@ -722,7 +705,7 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
                     : 'bg-slate-900 text-slate-400 hover:text-white border-slate-800'
                 }`}
               >
-                🌐 ออโต้เรียงเต็มผังใหญ่ (#1)
+                🌐 ออโต้ผังใหญ่ (#1)
               </button>
             </div>
           </div>
@@ -939,157 +922,19 @@ export const RegisterSection: React.FC<RegisterSectionProps> = ({
           )}
         </div>
 
-        {/* FIFO Queue & Race Condition Prevention Monitor (BullMQ + Redis / In-Memory Worker) */}
-        <div className="rounded-xl bg-slate-950/90 border border-indigo-500/30 p-3.5 space-y-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                <Server className="w-3.5 h-3.5 text-indigo-400" />
-                <span>
-                  {language === 'th'
-                    ? 'ระบบจัดคิวอัจฉริยะ (FIFO Queue Worker - BullMQ + Redis)'
-                    : 'FIFO Placement Queue (BullMQ + Redis / In-Memory)'}
-                </span>
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5 text-[11px] font-mono">
-              <span className="text-indigo-300 font-semibold bg-indigo-950/80 px-2 py-0.5 rounded border border-indigo-500/40">
-                {queueStatus?.engine || 'BullMQ + Redis / In-Memory FIFO'}
-              </span>
-              <span className="text-emerald-300 font-semibold bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/40">
-                Concurrency: 1
-              </span>
-            </div>
-          </div>
-
-          <div className="p-2.5 rounded-lg bg-indigo-950/25 border border-indigo-500/20 text-[11px] text-slate-300 space-y-1">
-            <div className="flex items-center gap-1.5 text-indigo-300 font-semibold">
-              <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              <span>
-                {language === 'th'
-                  ? 'ป้องกันปัญหาแย่งตำแหน่ง (Race Condition Guard 100%):'
-                  : 'Race Condition Protection (Zero Collision Guarantee):'}
-              </span>
-            </div>
-            <p className="leading-relaxed text-slate-400">
-              {language === 'th'
-                ? 'เนื่องจาก Worker จะประมวลผลคำขอตามลำดับคิว (FIFO - First In, First Out) ทำให้การคำนวณตำแหน่ง Parent ID และซ้าย/ขวา แม่นยำ 100% ไม่มีทางที่ผู้ใช้สองคนจะได้ตำแหน่งทับกัน'
-                : 'Worker processes placement requests sequentially (FIFO - First In, First Out) with atomic lease locks. Zero collision on Parent ID & child branches.'}
-            </p>
-            <div className="pt-1.5 border-t border-indigo-500/20 space-y-1 text-[10.5px]">
-              <div className="flex items-center gap-1.5 text-emerald-300 font-semibold">
-                <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
-                <span>
-                  {language === 'th'
-                    ? `เงื่อนไขหาตำแหน่งสมัคร & โคลนนิ่ง: ต่อติดตัวผู้แนะนำตรง #${sponsorNodeId} (ซ้ายก่อนขวา) หากเต็มจะไล่ตรวจติดตัวโคลนของรหัสหลัก #${sponsorNodeId} (ซ้ายก่อนขวา)`
-                    : `Registration & Clone Rule: Direct Sponsor #${sponsorNodeId} children first (Left then Right). If full, checks clones of #${sponsorNodeId}.`}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5 text-amber-300 font-semibold">
-                <Sparkles className="w-3 h-3 text-amber-400 shrink-0" />
-                <span>
-                  {language === 'th'
-                    ? `เงื่อนไข New Auto ID และ Auto Extra ID (แยกจากโคลนนิ่ง): จับคู่โคลนตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId) เท่านั้น`
-                    : `New Auto ID & Auto Extra ID Rule (Separated from Clone): Match clones strictly by Origin Main ID (originMainId === sponsorNodeId) only.`}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Real-time Queue Counters */}
-          <div className="grid grid-cols-3 gap-2 text-center text-xs font-mono">
-            <div className="bg-slate-900/90 p-2 rounded-lg border border-slate-800">
-              <div className="text-[10px] text-slate-400">
-                {language === 'th' ? 'คิวที่กำลังรอ' : 'Waiting in Queue'}
-              </div>
-              <div className="text-base font-bold text-amber-400">
-                {queueStatus?.waitingJobsCount ?? 0}
-              </div>
-            </div>
-            <div className="bg-slate-900/90 p-2 rounded-lg border border-slate-800">
-              <div className="text-[10px] text-slate-400">
-                {language === 'th' ? 'ตำแหน่งที่กำลังล็อคจอง' : 'Active Leases'}
-              </div>
-              <div className="text-base font-bold text-emerald-400">
-                {queueStatus?.activeReservationsCount ?? 0}
-              </div>
-            </div>
-            <div className="bg-slate-900/90 p-2 rounded-lg border border-slate-800">
-              <div className="text-[10px] text-slate-400">
-                {language === 'th' ? 'ประมวลผลสำเร็จ' : 'Processed Jobs'}
-              </div>
-              <div className="text-base font-bold text-cyan-400">
-                {queueStatus?.completedJobsCount ?? 0}
-              </div>
-            </div>
-          </div>
-
-          {/* Active Leased Positions List */}
-          {queueStatus?.activeReservations && queueStatus.activeReservations.length > 0 && (
-            <div className="space-y-1.5 pt-1">
-              <div className="text-[11px] font-bold text-amber-300 flex items-center gap-1">
-                <Clock className="w-3 h-3 text-amber-400" />
-                <span>
-                  {language === 'th'
-                    ? 'รายการตำแหน่งที่ถูกล็อคจองอยู่ในขณะนี้ (ระบบจะคำนวณตำแหน่งถัดไปให้อัตโนมัติ):'
-                    : 'Currently Locked Spots (Next applicant is automatically directed to next vacant slot):'}
-                </span>
-              </div>
-              <div className="space-y-1 max-h-32 overflow-y-auto font-mono text-[11px]">
-                {queueStatus.activeReservations.map((res) => {
-                  const remainingSec = Math.max(0, Math.ceil((res.expiresAt - Date.now()) / 1000));
-                  return (
-                    <div
-                      key={res.ticketId}
-                      className="p-1.5 rounded bg-slate-900/90 border border-amber-500/30 flex items-center justify-between text-slate-300"
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-amber-400 font-bold">
-                          🔒 Parent #{res.targetParentId} ({res.isLeft ? 'ซ้าย' : 'ขวา'})
-                        </span>
-                        <span className="text-slate-500 text-[10px]">
-                          ({res.owner.slice(0, 6)}...{res.owner.slice(-4)})
-                        </span>
-                      </div>
-                      <span className="text-amber-300 text-[10px]">
-                        {language === 'th' ? `เหลือเวลา ${remainingSec}s` : `${remainingSec}s left`}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Exact Solidity Fee Allocation Breakdown */}
-        <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl p-3.5 text-xs space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider">
-              {language === 'th'
-                ? 'การจัดสรรเหรียญ 5 USDT ต่อโหนดบน Smart Contract:'
-                : '5 USDT Distribution Protocol:'}
+        {/* Compact Queue Counter Strip */}
+        {queueStatus && (queueStatus.waitingJobsCount > 0 || queueStatus.activeReservationsCount > 0) && (
+          <div className="rounded-xl bg-slate-950/90 border border-indigo-500/30 px-3.5 py-2 flex items-center justify-between text-xs font-mono">
+            <span className="text-indigo-300 font-bold flex items-center gap-1.5">
+              <Server className="w-3.5 h-3.5 text-indigo-400" />
+              <span>คิวประมวลผล (FIFO Queue)</span>
             </span>
-            <span className="text-[10px] font-mono text-slate-500">
-              USDT: {USDT_ADDRESS.slice(0, 8)}...{USDT_ADDRESS.slice(-4)}
-            </span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
-            <div className="bg-slate-900/90 px-3 py-2 rounded-lg border border-slate-800 flex justify-between items-center">
-              <span className="text-slate-300">Direct (30%)</span>
-              <span className="font-mono font-bold text-emerald-400">1.50 USDT</span>
-            </div>
-            <div className="bg-slate-900/90 px-3 py-2 rounded-lg border border-slate-800 flex justify-between items-center">
-              <span className="text-slate-300">15 ชั้น (30%)</span>
-              <span className="font-mono font-bold text-cyan-400">1.50 USDT</span>
-            </div>
-            <div className="bg-slate-900/90 px-3 py-2 rounded-lg border border-slate-800 flex justify-between items-center">
-              <span className="text-slate-300">Vault (35%)</span>
-              <span className="font-mono font-bold text-indigo-400">1.75 USDT</span>
+            <div className="flex items-center gap-3">
+              <span className="text-amber-400">รอคิว: {queueStatus.waitingJobsCount}</span>
+              <span className="text-emerald-400">ล็อคจอง: {queueStatus.activeReservationsCount}</span>
             </div>
           </div>
-        </div>
+        )}
 
         {/* Inline Transaction Error / Success Feedback */}
         {txError && (

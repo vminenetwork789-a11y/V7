@@ -375,18 +375,13 @@ export const EventLogsSection: React.FC<EventLogsSectionProps> = ({ language, ac
             </div>
             <h3 className="text-lg font-bold text-emerald-400">
               {language === 'th'
-                ? '📡 ประวัติการกระจายรางวัลสด (Live Reward Event Sync)'
-                : '📡 Live Reward Event Sync (BNB Testnet)'}
+                ? '📡 ประวัติการกระจายรางวัลสด'
+                : '📡 Live Reward Events'}
             </h3>
             <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
               Chain ID: 97
             </span>
           </div>
-          <p className="text-xs text-slate-400 mt-1">
-            {language === 'th'
-              ? `เชื่อมต่อสัญญา ${CONTRACT_ADDRESS.slice(0, 8)}...${CONTRACT_ADDRESS.slice(-6)} ดึง Event "RewardDistributed" สดจากบล็อกเชน`
-              : `Synced with ${CONTRACT_ADDRESS.slice(0, 8)}...${CONTRACT_ADDRESS.slice(-6)} for real-time RewardDistributed events`}
-          </p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -490,23 +485,16 @@ export const EventLogsSection: React.FC<EventLogsSectionProps> = ({ language, ac
       {/* Logs Table / List */}
       <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
         {filteredLogs.length === 0 ? (
-          <div className="py-8 px-4 text-center text-xs text-slate-400 bg-slate-950/60 rounded-xl border border-slate-800/80 space-y-2">
+          <div className="py-6 px-4 text-center text-xs text-slate-400 bg-slate-950/60 rounded-xl border border-slate-800/80 space-y-1">
             <div className="flex items-center justify-center gap-1.5 text-emerald-400 font-semibold">
               <CheckCircle2 className="w-4 h-4" />
               <span>
-                {language === 'th'
-                  ? `เชื่อมต่อสัญญา ${CONTRACT_ADDRESS.slice(0, 6)}...${CONTRACT_ADDRESS.slice(-5)} สำเร็จแล้ว (กำลังดักฟัง Event สด)`
-                  : `Connected to ${CONTRACT_ADDRESS.slice(0, 6)}...${CONTRACT_ADDRESS.slice(-5)} (Listening for live events)`}
+                {language === 'th' ? 'ยังไม่มีรายการกระจายรางวัล' : 'No reward events yet'}
               </span>
             </div>
-            <p className="text-[11px] text-slate-500 max-w-md mx-auto leading-relaxed">
-              {language === 'th'
-                ? `ขณะนี้ในผัง Rank 1 มี ${totalNodesRank1} โหนด (Root Node #1) เมื่อมีการกดสมัครสมาชิกใหม่เข้าฝั่งซ้าย (Left Child) สัญญาจะกระจายรางวัล 5 USDT (Direct 30%, 15 ชั้น 30%, Vault 35%, AllSell 4%, Bot 1%) และแสดงรายการที่นี่แบบ Real-Time ทันที`
-                : `Rank 1 currently has ${totalNodesRank1} node(s). As soon as a new member registers into a Left slot, RewardDistributed events will appear here in real time.`}
-            </p>
             {lastSyncedAt && (
               <div className="text-[10px] font-mono text-slate-600">
-                ซิงค์ล่าสุดเวลา: {lastSyncedAt} • USDT: {USDT_ADDRESS.slice(0, 8)}...{USDT_ADDRESS.slice(-4)}
+                ซิงค์ล่าสุด: {lastSyncedAt}
               </div>
             )}
           </div>

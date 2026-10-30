@@ -71,6 +71,9 @@ export interface EnrichedBinaryNode {
   nextRankPrice: number;
   familyPoolDirectFromLineage?: number; // 30% จากโคลน #1 ลงซ้ายที่ถูกส่งเข้า Family Pool
   grossVaultFromLineage?: number; // ยอดสะสม Vault รวมก่อนหักออก Auto ID / อัปเกรด
+  grossVault1To4FromLineage?: number; // ยอดสะสม Vault รวมทั้ง R1-R4 ก่อนหักออก Auto ID
+  thisRankRemainingVault?: number; // ยอดคงเหลือจริงใน nodeUpgradeVault ของ Rank ปัจจุบัน
+  vault1To4BreakdownText?: string; // รายละเอียดการสะสมและหัก Auto ID ข้าม Rank 1-4
 }
 
 interface ConnectorLine {
@@ -607,10 +610,7 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
   const treeContentRef = useRef<HTMLDivElement | null>(null);
   const [connectorLines, setConnectorLines] = useState<ConnectorLine[]>([]);
-  const [treeDimensions, setTreeDimensions] = useState<{ width: number; height: number }>({
-    width: 0,
-    height: 0,
-  });
+  const [isCloneStatusPopupOpen, setIsCloneStatusPopupOpen] = useState<boolean>(false);
 
   const getWorkingProvider = useCallback(async (): Promise<ethers.Provider> => {
     if (typeof window !== 'undefined' && window.ethereum && isBscTestnet) {
@@ -683,10 +683,17 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
       >();
 
       const idsToFetch = Array.from({ length: maxFetch }, (_, idx) => idx + 1);
+      const onChainOriginMap = new Map<number, number>();
+      const onChainNodeVaultMap = new Map<number, number>();
+
       await Promise.all(
         idsToFetch.map(async (nodeId) => {
           try {
-            const raw = await contract.rankNodes(selectedRank, nodeId);
+            const [raw, origBn, vaultBn] = await Promise.all([
+              contract.rankNodes(selectedRank, nodeId),
+              contract.nodeOriginMainId(selectedRank, nodeId).catch(() => 0n),
+              contract.nodeUpgradeVault(selectedRank, nodeId).catch(() => 0n),
+            ]);
             const fetchedId = Number(raw.id ?? raw[0] ?? 0);
             if (fetchedId > 0) {
               rawNodes.set(fetchedId, {
@@ -699,10 +706,111 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
                 isClone: Boolean(raw.isClone ?? raw[6] ?? false),
                 isExtraId: Boolean(raw.isExtraId ?? raw[7] ?? false),
               });
+              if (Number(origBn) > 0) {
+                onChainOriginMap.set(fetchedId, Number(origBn));
+              }
+              onChainNodeVaultMap.set(fetchedId, Number(ethers.formatUnits(vaultBn, 6)));
             }
           } catch {
             // Ignore individual slot read error
           }
+        })
+      );
+
+      // Guarantee Root Node #1 is always present for Ranks 1..27 (initialized in constructor for all 27 ranks)
+      if (!rawNodes.has(1)) {
+        let fallbackRootOwner = '0x622E20082e63c7220c5AF0A77Cbc437a98505311';
+        try {
+          const r1Root = await contract.rankNodes(1, 1);
+          const r1Owner = String(r1Root.owner ?? r1Root[1] ?? '');
+          if (r1Owner && r1Owner !== ethers.ZeroAddress) {
+            fallbackRootOwner = r1Owner;
+          }
+        } catch {
+          // Use default root owner
+        }
+        rawNodes.set(1, {
+          id: 1,
+          owner: fallbackRootOwner,
+          directSponsor: ethers.ZeroAddress,
+          parentId: 0,
+          leftChild: 0,
+          rightChild: 0,
+          isClone: false,
+          isExtraId: false,
+        });
+      }
+
+      // Fetch cross-rank snapshots for Ranks 1..4 (for Vault 1-4 combined pool) and selectedRank + 1 (for per-Main-ID upgrade check)
+      const ranksToSnapshot = new Set<number>([1, 2, 3, 4]);
+      if (selectedRank < 27) {
+        ranksToSnapshot.add(selectedRank + 1);
+      }
+
+      interface RankNodeSnapshot {
+        id: number;
+        owner: string;
+        directSponsor: string;
+        parentId: number;
+        leftChild: number;
+        rightChild: number;
+        isClone: boolean;
+        isExtraId: boolean;
+        originMainId: number;
+        nodeVault: number;
+      }
+
+      const multiRankSnapshots = new Map<number, Map<number, RankNodeSnapshot>>();
+      await Promise.all(
+        Array.from(ranksToSnapshot).map(async (r) => {
+          if (r === selectedRank) {
+            const selfSnap = new Map<number, RankNodeSnapshot>();
+            for (const [id, n] of rawNodes.entries()) {
+              selfSnap.set(id, {
+                ...n,
+                originMainId: onChainOriginMap.get(id) || id,
+                nodeVault: onChainNodeVaultMap.get(id) || 0,
+              });
+            }
+            multiRankSnapshots.set(r, selfSnap);
+            return;
+          }
+          const rMap = new Map<number, RankNodeSnapshot>();
+          try {
+            const totalInR = Math.min(Number(await contract.totalNodesInRank(r)), 60);
+            const rIds = Array.from({ length: Math.max(totalInR, 1) }, (_, idx) => idx + 1);
+            await Promise.all(
+              rIds.map(async (nid) => {
+                try {
+                  const [raw, origBn, vaultBn] = await Promise.all([
+                    contract.rankNodes(r, nid),
+                    contract.nodeOriginMainId(r, nid).catch(() => 0n),
+                    contract.nodeUpgradeVault(r, nid).catch(() => 0n),
+                  ]);
+                  const fid = Number(raw.id ?? raw[0] ?? 0);
+                  if (fid > 0) {
+                    rMap.set(fid, {
+                      id: fid,
+                      owner: String(raw.owner ?? raw[1] ?? ethers.ZeroAddress),
+                      directSponsor: String(raw.directSponsor ?? raw[2] ?? ethers.ZeroAddress),
+                      parentId: Number(raw.parentId ?? raw[3] ?? 0),
+                      leftChild: Number(raw.leftChild ?? raw[4] ?? 0),
+                      rightChild: Number(raw.rightChild ?? raw[5] ?? 0),
+                      isClone: Boolean(raw.isClone ?? raw[6] ?? false),
+                      isExtraId: Boolean(raw.isExtraId ?? raw[7] ?? false),
+                      originMainId: Number(origBn) > 0 ? Number(origBn) : fid,
+                      nodeVault: Number(ethers.formatUnits(vaultBn, 6)),
+                    });
+                  }
+                } catch {
+                  // Ignore
+                }
+              })
+            );
+          } catch {
+            // Ignore
+          }
+          multiRankSnapshots.set(r, rMap);
         })
       );
 
@@ -725,27 +833,6 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
 
       const sortedIds = Array.from(rawNodes.keys()).sort((a, b) => a - b);
       const rootOwnerKey = (rawNodes.get(1)?.owner || '').toLowerCase();
-
-      // Fetch currentMaxRank for unique owners in the tree so we know whether selectedRank + 1 is already unlocked
-      const uniqueOwners = Array.from(
-        new Set(
-          Array.from(rawNodes.values())
-            .map((n) => n.owner)
-            .filter((addr) => addr && addr !== ethers.ZeroAddress)
-        )
-      );
-      const ownerMaxRankMap = new Map<string, number>();
-      await Promise.all(
-        uniqueOwners.map(async (ownerAddr) => {
-          try {
-            const prof = await contract.getUserProfile(ownerAddr);
-            const maxR = Number(prof.currentMaxRank ?? prof[3] ?? 1);
-            ownerMaxRankMap.set(ownerAddr.toLowerCase(), maxR > 0 ? maxR : 1);
-          } catch {
-            ownerMaxRankMap.set(ownerAddr.toLowerCase(), 1);
-          }
-        })
-      );
 
       // Helper to check if candidateAncestorId is an ancestor of targetId in the binary tree
       const isAncestorOf = (candidateAncestorId: number, targetId: number): boolean => {
@@ -789,6 +876,7 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
           subCloneDepthMap.set(n.id, 0);
         } else if (n.isClone) {
           const walletFirstId = ownerPrimaryNodeMap.get(ownerKey) || n.id;
+          const onChainOrigin = onChainOriginMap.get(n.id) || 0;
           let spawnedFromNodeId = 0;
 
           for (let lookback = id - 1; lookback >= 1; lookback--) {
@@ -799,7 +887,8 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
               triggerParent &&
               triggerParent.rightChild === candidateRightChild.id &&
               triggerParent.owner.toLowerCase() === ownerKey &&
-              !matchedRightTriggers.has(triggerParent.id)
+              !matchedRightTriggers.has(triggerParent.id) &&
+              (onChainOrigin === 0 || (originMainIdMap.get(triggerParent.id) || triggerParent.id) === onChainOrigin)
             ) {
               spawnedFromNodeId = triggerParent.id;
               matchedRightTriggers.add(triggerParent.id);
@@ -808,17 +897,24 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
           }
 
           if (spawnedFromNodeId === 0) {
-            const ownerMains = ownerAllMainNodesMap.get(ownerKey) || [];
-            const matchingSubtreeMain = [...ownerMains]
-              .reverse()
-              .find((mId) => mId < id && isAncestorOf(mId, id));
-            spawnedFromNodeId = matchingSubtreeMain || walletFirstId;
+            if (onChainOrigin > 0) {
+              spawnedFromNodeId = onChainOrigin;
+            } else {
+              const ownerMains = ownerAllMainNodesMap.get(ownerKey) || [];
+              const matchingSubtreeMain = [...ownerMains]
+                .reverse()
+                .find((mId) => mId < id && isAncestorOf(mId, id));
+              spawnedFromNodeId = matchingSubtreeMain || walletFirstId;
+            }
           }
 
           const triggerIsClone = Boolean(rawNodes.get(spawnedFromNodeId)?.isClone);
-          const originMainId = triggerIsClone
-            ? originMainIdMap.get(spawnedFromNodeId) || walletFirstId
-            : spawnedFromNodeId;
+          const originMainId =
+            onChainOrigin > 0
+              ? onChainOrigin
+              : triggerIsClone
+              ? originMainIdMap.get(spawnedFromNodeId) || walletFirstId
+              : spawnedFromNodeId;
           const subCloneDepth = triggerIsClone
             ? (subCloneDepthMap.get(spawnedFromNodeId) || 0) + 1
             : 0;
@@ -838,30 +934,185 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
           nodeSpawnedClones.set(spawnedFromNodeId, list);
         } else {
           const walletFirstId = ownerPrimaryNodeMap.get(ownerKey) || n.id;
-          originMainIdMap.set(n.id, walletFirstId);
+          const onChainOrigin = onChainOriginMap.get(n.id) || walletFirstId;
+          originMainIdMap.set(n.id, onChainOrigin);
           spawnedFromMap.set(n.id, 0);
           cloneRoundMap.set(n.id, 0);
           subCloneDepthMap.set(n.id, 0);
         }
       }
 
+      // Compute cross-rank Vault 1-4 stats per Main ID (R1..R4 combined) and determine which Main IDs unlocked nextRank
+      // Rule: เงินแยกของใครของมัน — เฉพาะรหัสหลักที่มีโหนดในแรงค์ถัดไป (เช่น #1 และ #2 ใน Rank 2) เท่านั้นที่ถือว่าปลดล็อกแรงค์ถัดไปแล้ว
+      // รหัสหลักอื่นของกระเป๋าเดียวกันที่ยังไม่ได้ขึ้นแรงค์ถัดไป (เช่น #3, #5, #7, #9) ยังคงสะสมใน Upgrade Rank Pool ของตัวเอง
+      const buildOwnerMainNodesInRank = (r: number): Map<string, number[]> => {
+        const snap = multiRankSnapshots.get(r);
+        const map = new Map<string, number[]>();
+        if (!snap) return map;
+        const sIds = Array.from(snap.keys()).sort((a, b) => a - b);
+        for (const sid of sIds) {
+          const sn = snap.get(sid)!;
+          if (!sn.isClone && !sn.isExtraId) {
+            const oKey = sn.owner.toLowerCase();
+            // Exclude self-sponsored Auto IDs in Rank 1 (id > firstMain) when matching upgraded ranks 2..27
+            const list = map.get(oKey) || [];
+            if (r === 1 && list.length > 0 && sn.directSponsor.toLowerCase() === oKey) {
+              // Keep track separately, only manual/upgraded main IDs map to R2+
+              list.push(sn.id);
+            } else {
+              list.push(sn.id);
+            }
+            map.set(oKey, list);
+          }
+        }
+        return map;
+      };
+
+      const ownerMainsByRank = new Map<number, Map<string, number[]>>();
+      for (const r of Array.from(ranksToSnapshot)) {
+        ownerMainsByRank.set(r, buildOwnerMainNodesInRank(r));
+      }
+
+      // Check if a specific Main ID in rank `r` has unlocked `r + 1`
+      const hasMainIdUnlockedNextRankIn = (r: number, mainIdInR: number, ownerAddr: string): boolean => {
+        if (mainIdInR === 1 || ownerAddr.toLowerCase() === rootOwnerKey) return true;
+        const nextSnap = multiRankSnapshots.get(r + 1);
+        if (!nextSnap) return false;
+        const oKey = ownerAddr.toLowerCase();
+        const mainsInR = ownerMainsByRank.get(r)?.get(oKey) || [];
+        const mainsInNext = ownerMainsByRank.get(r + 1)?.get(oKey) || [];
+        const idxInR = mainsInR.indexOf(mainIdInR);
+        if (idxInR >= 0 && idxInR < mainsInNext.length) {
+          return true;
+        }
+        return false;
+      };
+
+      // Map a Main ID in `selectedRank` to its corresponding Main ID in target rank `targetR` (1..4)
+      const getCorrespondingMainIdInRank = (
+        sourceRank: number,
+        sourceMainId: number,
+        ownerAddr: string,
+        targetR: number
+      ): number => {
+        if (sourceRank === targetR) return sourceMainId;
+        if (sourceMainId === 1) return 1;
+        const oKey = ownerAddr.toLowerCase();
+        const mainsInSource = ownerMainsByRank.get(sourceRank)?.get(oKey) || [];
+        const mainsInTarget = ownerMainsByRank.get(targetR)?.get(oKey) || [];
+        const idx = mainsInSource.indexOf(sourceMainId);
+        if (idx >= 0 && idx < mainsInTarget.length) {
+          return mainsInTarget[idx];
+        }
+        return 0;
+      };
+
+      // Pre-calculate cross-rank Vault 1-4 gross & remaining balances for each Main ID in selectedRank
+      const crossRankGrossVault1To4 = new Map<number, number>();
+      const crossRankRemVault1To4 = new Map<number, number>();
+      const crossRankAutoIdCount = new Map<number, number>();
+      const crossRankBreakdownText = new Map<number, string>();
+      // Also pre-seed extra Vault 1-4 contributed by Ranks 2..4 so Rank 1 chronological simulation detects Auto ID #25
+      const extraVaultFromRanks2To4 = new Map<number, number>();
+
+      for (const id of sortedIds) {
+        const n = rawNodes.get(id)!;
+        if (n.isClone || n.isExtraId) continue;
+
+        let totalGross1To4 = 0;
+        let totalRem1To4 = 0;
+        let extraR2To4 = 0;
+        const grossParts: string[] = [];
+        const remParts: string[] = [];
+
+        for (let r = 1; r <= 4; r++) {
+          const snapR = multiRankSnapshots.get(r);
+          if (!snapR) continue;
+          const correspId = getCorrespondingMainIdInRank(selectedRank, id, n.owner, r);
+          if (correspId <= 0 || !snapR.has(correspId)) continue;
+
+          const unlockedNext = hasMainIdUnlockedNextRankIn(r, correspId, n.owner);
+          if (!unlockedNext) continue;
+
+          const rUnitVault = (RANK_PRICES_USDT[r - 1] || 5) * 0.35;
+          let leftCountInR = 0;
+          for (const sn of snapR.values()) {
+            const snOrigin = sn.isClone ? sn.originMainId : sn.id;
+            if (snOrigin === correspId && sn.leftChild > 0) {
+              const lc = snapR.get(sn.leftChild);
+              if (!lc || !lc.isExtraId) {
+                leftCountInR++;
+              }
+            }
+          }
+
+          const grossR = Number((leftCountInR * rUnitVault).toFixed(4));
+          const remR = Number((snapR.get(correspId)?.nodeVault || 0).toFixed(4));
+
+          if (grossR > 0 || remR > 0) {
+            totalGross1To4 = Number((totalGross1To4 + grossR).toFixed(4));
+            totalRem1To4 = Number((totalRem1To4 + remR).toFixed(4));
+            if (r > 1) {
+              extraR2To4 = Number((extraR2To4 + grossR).toFixed(4));
+            }
+            grossParts.push(`R${r}: ${grossR.toFixed(2)}`);
+            remParts.push(`R${r}: ${remR.toFixed(2)}`);
+          }
+        }
+
+        crossRankGrossVault1To4.set(id, totalGross1To4);
+        crossRankRemVault1To4.set(id, totalRem1To4);
+        extraVaultFromRanks2To4.set(id, extraR2To4);
+
+        const deducted = Math.max(0, Number((totalGross1To4 - totalRem1To4).toFixed(4)));
+        const spawnedCount = Math.round(deducted / 5);
+        crossRankAutoIdCount.set(id, spawnedCount);
+
+        if (grossParts.length > 1) {
+          crossRankBreakdownText.set(
+            id,
+            `สะสม R1-R4: ${totalGross1To4.toFixed(2)} U (${grossParts.join(' + ')}) • ออก Auto ID -${(
+              spawnedCount * 5
+            ).toFixed(2)} U • คงเหลือ ${remParts.join(', ')} U`
+          );
+        } else if (spawnedCount > 0) {
+          crossRankBreakdownText.set(
+            id,
+            `สะสม ${totalGross1To4.toFixed(2)} U • ออก Auto ID -${(spawnedCount * 5).toFixed(2)} U`
+          );
+        }
+      }
+
       // Helper to resolve the exact Sponsor Main Node ID using Clone Lineage (originMainIdMap)
       const resolveSponsorNodeIdForNode = (nodeId: number, sponsorAddr: string): number => {
-        if (!sponsorAddr || sponsorAddr === ethers.ZeroAddress) return 0;
-        const sponsorKey = sponsorAddr.toLowerCase();
+        if (autoIdSourceMainMap.has(nodeId)) {
+          return autoIdSourceMainMap.get(nodeId)!;
+        }
         const n = rawNodes.get(nodeId);
 
-        // If nodeId is a clone, it inherits the sponsor of its originMainId
+        // If nodeId is a clone, it ALWAYS inherits the sponsor of its originMainId (never originMainId itself, except Root #1)
         if (n && n.isClone) {
           const originMain = originMainIdMap.get(nodeId) || nodeId;
           if (originMain !== nodeId) {
-            const originNode = rawNodes.get(originMain);
-            if (originNode && originNode.owner.toLowerCase() === sponsorKey) {
-              return originMain;
+            if (originMain === 1) {
+              return 1;
             }
-            return resolveSponsorNodeIdForNode(originMain, sponsorAddr);
+            if (autoIdSourceMainMap.has(originMain)) {
+              return autoIdSourceMainMap.get(originMain)!;
+            }
+            const originNode = rawNodes.get(originMain);
+            const effectiveSponsorAddr =
+              originNode &&
+              originNode.directSponsor &&
+              originNode.directSponsor !== ethers.ZeroAddress
+                ? originNode.directSponsor
+                : sponsorAddr;
+            return resolveSponsorNodeIdForNode(originMain, effectiveSponsorAddr);
           }
         }
+
+        if (!sponsorAddr || sponsorAddr === ethers.ZeroAddress) return 0;
+        const sponsorKey = sponsorAddr.toLowerCase();
 
         const candidateMainIds = (ownerAllMainNodesMap.get(sponsorKey) || []).filter(
           (mId) => mId < nodeId
@@ -894,6 +1145,8 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
 
       // Pass 2: Chronological simulation of Auto New Main IDs, Left-Child Direct (30%), Unilevel (15 tiers x 2%), and Vault Pools (35%)
       const rank1EntryPrice = RANK_PRICES_USDT[0] || 5;
+      const usedExtraR2To4ForMain = new Set<number>();
+
       for (const id of sortedIds) {
         const n = rawNodes.get(id)!;
         const ownerKey = n.owner.toLowerCase();
@@ -905,13 +1158,34 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
             n.directSponsor && n.directSponsor.toLowerCase() === ownerKey
           );
           if (isSelfSponsored) {
-            // Find an existing Main ID of this owner whose Auto ID Vault has accumulated >= 5 USDT
             const priorMains = (ownerAllMainNodesMap.get(ownerKey) || []).filter(
               (mId) => mId < n.id
             );
-            const sourceMain = priorMains.find(
+            // First check if a prior Main ID already has >= 5 USDT in Rank 1 vault
+            let sourceMain = priorMains.find(
               (mId) => (lineageAutoIdVault.get(mId) || 0) + 1e-9 >= rank1EntryPrice
             );
+            // If not yet >= 5 USDT from Rank 1 alone, check if adding Ranks 2..4 Vault (e.g. #1's +3.50 U in Rank 2) reaches >= 5 USDT
+            if (sourceMain === undefined && selectedRank === 1) {
+              sourceMain = priorMains.find((mId) => {
+                if (usedExtraR2To4ForMain.has(mId)) return false;
+                const r1Bal = lineageAutoIdVault.get(mId) || 0;
+                const extraBal = extraVaultFromRanks2To4.get(mId) || 0;
+                const maxAllowedSpawns = crossRankAutoIdCount.get(mId) || 0;
+                const currentSpawns = mainNodeAutoIdSpawnCount.get(mId) || 0;
+                return (
+                  currentSpawns < maxAllowedSpawns &&
+                  r1Bal + extraBal + 1e-9 >= rank1EntryPrice
+                );
+              });
+              if (sourceMain !== undefined) {
+                usedExtraR2To4ForMain.add(sourceMain);
+                const r1Bal = lineageAutoIdVault.get(sourceMain) || 0;
+                const extraBal = extraVaultFromRanks2To4.get(sourceMain) || 0;
+                lineageAutoIdVault.set(sourceMain, Number((r1Bal + extraBal).toFixed(4)));
+              }
+            }
+
             if (sourceMain !== undefined) {
               autoMainNodeIds.add(n.id);
               autoIdSourceMainMap.set(n.id, sourceMain);
@@ -947,7 +1221,7 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
         if (n.parentId > 0) {
           const parent = rawNodes.get(n.parentId);
           if (parent && parent.leftChild === n.id) {
-            // A. 30% Direct Referral (FractalFlowMatrix27.sol lines 1195-1211)
+            // A. 30% Direct Referral
             // Rule: กรณีเฉพาะไอดีโคลนนิ่ง ID 1 เมื่อไปต่อฝั่งซ้ายของใครก็ตาม 30% ค่าแนะนำตรงจะถูกส่งไปที่ familyPool
             const isId1Clone =
               n.isClone &&
@@ -983,18 +1257,15 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
               currUplineId = upNode ? upNode.parentId : 0;
             }
 
-            // C. 35% Left-Child Upgrade Vault (FractalFlowMatrix27.sol lines 1230-1254)
-            const parentOwnerKey = parent.owner.toLowerCase();
+            // C. 35% Left-Child Upgrade Vault (per Main ID — เงินแยกของใครของมัน)
             const parentMainId = originMainIdMap.get(parent.id) || parent.id;
             lineageGrossVaultMap.set(
               parentMainId,
               Number(((lineageGrossVaultMap.get(parentMainId) || 0) + vaultUnit).toFixed(4))
             );
 
-            const ownerMaxR = ownerMaxRankMap.get(parentOwnerKey) || 1;
             const hasUnlockedNextRank =
-              parentOwnerKey === rootOwnerKey ||
-              ownerMaxR > selectedRank ||
+              hasMainIdUnlockedNextRankIn(selectedRank, parentMainId, parent.owner) ||
               Boolean(lineageHasUpgraded.get(parentMainId));
 
             if (!n.isExtraId && selectedRank < 27) {
@@ -1056,6 +1327,17 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
         let directUplineNodeId = 0;
         if (autoIdSourceMainMap.has(n.id)) {
           directUplineNodeId = autoIdSourceMainMap.get(n.id)!;
+        } else if (n.isClone) {
+          if (originMainId === 1) {
+            directUplineNodeId = 1;
+          } else {
+            const originEnriched = enrichedMap.get(originMainId);
+            if (originEnriched && originEnriched.directUplineNodeId > 0) {
+              directUplineNodeId = originEnriched.directUplineNodeId;
+            } else {
+              directUplineNodeId = resolveSponsorNodeIdForNode(n.id, n.directSponsor);
+            }
+          }
         } else if (n.directSponsor && n.directSponsor !== ethers.ZeroAddress) {
           directUplineNodeId = resolveSponsorNodeIdForNode(n.id, n.directSponsor);
         }
@@ -1113,14 +1395,44 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
         }
         node.directRewardAllNodes = Number(sumDirect.toFixed(4));
         node.unilevelRewardAllNodes = Number(sumUnilevel.toFixed(4));
-        node.upgradeRankPool = lineageUpgradeVault.get(targetMainId) || 0;
-        node.newAutoIdPool = selectedRank <= 4 ? lineageAutoIdVault.get(targetMainId) || 0 : 0;
+
+        const unlockedNext = hasMainIdUnlockedNextRankIn(selectedRank, targetMainId, node.owner);
+        const onChainThisRankVault = onChainNodeVaultMap.get(targetMainId);
+
+        if (!unlockedNext) {
+          node.upgradeRankPool =
+            onChainThisRankVault !== undefined && onChainThisRankVault > 0
+              ? onChainThisRankVault
+              : lineageUpgradeVault.get(targetMainId) || 0;
+          node.newAutoIdPool = 0;
+        } else {
+          node.upgradeRankPool = 0;
+          if (selectedRank <= 4) {
+            const crossRem = crossRankRemVault1To4.get(targetMainId);
+            node.newAutoIdPool =
+              crossRem !== undefined ? crossRem : lineageAutoIdVault.get(targetMainId) || 0;
+          } else {
+            node.newAutoIdPool = 0;
+          }
+        }
+
         node.newExtraIdPool = selectedRank >= 5 ? lineageExtraIdVault.get(targetMainId) || 0 : 0;
         node.totalClonesCount = nodeCloneRoundCount.get(targetMainId) || 0;
-        node.totalAutoIdCount = mainNodeAutoIdSpawnCount.get(targetMainId) || 0;
+
+        const crossSpawnCount = crossRankAutoIdCount.get(targetMainId);
+        node.totalAutoIdCount =
+          selectedRank <= 4 && crossSpawnCount !== undefined && crossSpawnCount > 0
+            ? crossSpawnCount
+            : mainNodeAutoIdSpawnCount.get(targetMainId) || 0;
+
         node.totalExtraIdCount = lineageExtraIdSpawnCount.get(targetMainId) || 0;
         node.familyPoolDirectFromLineage = lineageFamilyPoolDirectMap.get(targetMainId) || 0;
         node.grossVaultFromLineage = lineageGrossVaultMap.get(targetMainId) || 0;
+        node.grossVault1To4FromLineage =
+          crossRankGrossVault1To4.get(targetMainId) || node.grossVaultFromLineage;
+        node.thisRankRemainingVault =
+          onChainThisRankVault !== undefined ? onChainThisRankVault : node.newAutoIdPool;
+        node.vault1To4BreakdownText = crossRankBreakdownText.get(targetMainId);
       }
 
       setOnChainNodesMap(enrichedMap);
@@ -1179,9 +1491,6 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
 
     const containerRect = containerEl.getBoundingClientRect();
     const scale = zoomScale || 1;
-    const width = containerEl.scrollWidth;
-    const height = containerEl.scrollHeight;
-    setTreeDimensions({ width, height });
 
     const newLines: ConnectorLine[] = [];
     const parentEls = containerEl.querySelectorAll<HTMLElement>('[data-node-anchor]');
@@ -1240,6 +1549,19 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
 
     setConnectorLines(newLines);
   }, [activeNodesMap, zoomScale]);
+
+  // Reset horizontal scroll position to center Root Node whenever rank, viewMode, or focusRootId changes
+  useLayoutEffect(() => {
+    const viewportEl = scrollViewportRef.current;
+    if (!viewportEl) return;
+    const centerScroll = () => {
+      const maxScrollLeft = Math.max(0, viewportEl.scrollWidth - viewportEl.clientWidth);
+      viewportEl.scrollLeft = maxScrollLeft > 0 ? Math.floor(maxScrollLeft / 2) : 0;
+    };
+    centerScroll();
+    const timer = setTimeout(centerScroll, 50);
+    return () => clearTimeout(timer);
+  }, [selectedRank, viewMode, focusRootId, activeNodesMap]);
 
   useLayoutEffect(() => {
     recalculateTreeConnectors();
@@ -1678,7 +2000,12 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
                       ? `${node.upgradeRankPool.toFixed(2)}/${node.nextRankPrice}U`
                       : selectedRank <= 4 &&
                         (node.newAutoIdPool > 0 || node.totalAutoIdCount > 0 || node.id === 1)
-                      ? `${node.newAutoIdPool.toFixed(2)}/5U`
+                      ? `${node.newAutoIdPool.toFixed(2)}/5U${
+                          typeof node.thisRankRemainingVault === 'number' &&
+                          Math.abs(node.thisRankRemainingVault - node.newAutoIdPool) > 0.001
+                            ? ` (R${selectedRank}: ${node.thisRankRemainingVault.toFixed(2)}U)`
+                            : ''
+                        }`
                       : `${node.vaultBalance.toFixed(2)}/${node.nextRankPrice}U`}
                   </strong>
                 </span>
@@ -1791,7 +2118,7 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
 
             {/* Box 2: ผลประโยชน์สะสมเฉพาะรหัสหลักนี้ (#originMainId) — เงินแยกของใครของมัน */}
             <div className="rounded-xl bg-[#10162f] border border-indigo-500/40 p-2.5 sm:p-3 space-y-1.5 text-xs h-auto">
-              <div className="border-b border-indigo-500/20 pb-1 space-y-0.5">
+              <div className="border-b border-indigo-500/20 pb-1">
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-indigo-300">
                     {language === 'th'
@@ -1802,11 +2129,6 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
                     แยกเงินอิสระ
                   </span>
                 </div>
-                <p className="text-[10px] text-slate-400">
-                  {language === 'th'
-                    ? `เงินแยกของใครของมัน: รวมเฉพาะรหัสหลัก #${node.originMainId} และโคลนในสายงานนี้เท่านั้น ไม่ปนกับรหัสหลักอื่น`
-                    : `Independent balance for Main ID #${node.originMainId} & its lineage clones (not pooled with other Main IDs)`}
-                </p>
               </div>
 
               <div className="flex items-center justify-between">
@@ -1847,12 +2169,16 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
                     {node.newAutoIdPool.toFixed(2)} U
                   </span>
                 </div>
-                {node.totalAutoIdCount > 0 && Boolean(node.grossVaultFromLineage) && (
+                {node.vault1To4BreakdownText ? (
+                  <div className="text-[10px] text-slate-400 text-right font-mono leading-relaxed">
+                    ({node.vault1To4BreakdownText})
+                  </div>
+                ) : node.totalAutoIdCount > 0 && Boolean(node.grossVaultFromLineage) ? (
                   <div className="text-[10px] text-slate-400 text-right font-mono">
                     (สะสม {node.grossVaultFromLineage?.toFixed(2)} U • ออก Auto ID -
                     {(node.totalAutoIdCount * 5).toFixed(2)} U)
                   </div>
-                )}
+                ) : null}
 
                 <div className="flex items-center justify-between">
                   <span className="text-rose-400 font-bold">New Extra ID Pool:</span>
@@ -1913,13 +2239,20 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
 
   // Recursive Binary Subtree Renderer
   const renderBinarySubtree = (nodeId: number, currentDepth: number): React.ReactNode => {
-    const node = activeNodesMap.get(nodeId);
+    const resolvedId =
+      currentDepth === 1 && !activeNodesMap.has(nodeId)
+        ? activeNodesMap.has(1)
+          ? 1
+          : activeNodesMap.keys().next().value || 1
+        : nodeId;
+    const node = activeNodesMap.get(resolvedId);
     if (!node) return null;
 
     const maxDepth = maxRenderDepth || 8;
     const hasLeft = node.leftChild > 0 && activeNodesMap.has(node.leftChild);
     const hasRight = node.rightChild > 0 && activeNodesMap.has(node.rightChild);
-    const showChildrenRow = currentDepth < maxDepth && (hasLeft || hasRight);
+    const showChildrenRow =
+      currentDepth < maxDepth && (hasLeft || hasRight || currentDepth === 1);
 
     return (
       <div className="inline-flex flex-col items-center h-auto w-auto">
@@ -1954,7 +2287,7 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
         <div>
           <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-base sm:text-lg md:text-xl font-extrabold text-white flex items-center gap-2">
-              <span>🌳 ผังต้นไม้ไบนารี่ 27 Ranks & รายละเอียดผลประโยชน์สะสม</span>
+              <span>🌳 ผังต้นไม้ไบนารี่ 27 Ranks</span>
             </h2>
             <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-mono">
               Contract: {(contractAddress || CONTRACT_ADDRESS).slice(0, 6)}...{(contractAddress || CONTRACT_ADDRESS).slice(-4)}
@@ -1962,13 +2295,10 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
             {justUpdatedBadge && (
               <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-200 border border-emerald-400 font-semibold flex items-center gap-1.5 animate-pulse">
                 <Check className="w-3.5 h-3.5 text-emerald-300" />
-                <span>สมัครสำเร็จ! ผังต้นไม้อัปเดตข้อมูลสดแล้ว (Synced)</span>
+                <span>อัปเดตล่าสุดแล้ว</span>
               </span>
             )}
           </div>
-          <p className="text-xs text-slate-400 mt-1">
-            แสดงการ์ด NEW MANUAL ID และ CLONE ID พร้อมระบุ &ldquo;รหัสหลัก&rdquo; รอบโคลนนิ่ง และรายละเอียดผลประโยชน์สะสมครบถ้วน
-          </p>
         </div>
 
         {/* Mode Switcher & Rank Selector */}
@@ -2026,8 +2356,13 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
           <select
             value={selectedRank}
             onChange={(e) => {
-              setSelectedRank(Number(e.target.value));
+              const nextRank = Number(e.target.value);
+              setSelectedRank(nextRank);
               setFocusRootId(1);
+              setNavigationHistory([1]);
+              setSearchInput('1');
+              setExpandedBenefitNodeId(null);
+              setZoomScale(1);
             }}
             className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs font-mono text-amber-300 focus:outline-none focus:border-emerald-500"
           >
@@ -2181,62 +2516,152 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
         </div>
       </div>
 
-      {/* 3. Clone Lineage Summary Strip */}
+      {/* 3. Clone Lineage Summary Trigger Bar & Popup Modal */}
       {allClonesInRank.length > 0 && (
-        <div className="rounded-2xl bg-emerald-950/25 border border-emerald-500/30 p-3 sm:p-3.5 space-y-2 h-auto">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <span className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
-              <Dna className="w-4 h-4 text-emerald-400" />
+        <>
+          <div className="rounded-2xl bg-emerald-950/30 border border-emerald-500/35 px-3.5 py-2.5 flex items-center justify-between flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setIsCloneStatusPopupOpen(true)}
+              className="flex items-center gap-2 text-left text-xs font-bold text-emerald-300 hover:text-emerald-200 transition-colors cursor-pointer"
+            >
+              <Dna className="w-4 h-4 text-emerald-400 shrink-0" />
               <span>
                 สรุปสถานะรหัสโคลนนิ่ง (Rebirth Clone Status) ใน Rank {selectedRank}: พบ{' '}
-                {allClonesInRank.length} รหัสโคลน
+                <span className="text-amber-300 font-mono underline decoration-emerald-400/60">
+                  {allClonesInRank.length} รหัสโคลน
+                </span>
               </span>
-            </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsCloneStatusPopupOpen(true)}
+              className="px-3 py-1.5 rounded-xl bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-100 font-semibold text-xs border border-emerald-500/50 flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
+            >
+              <Eye className="w-3.5 h-3.5 text-emerald-300" />
+              <span>ดูรายการโคลน ({allClonesInRank.length})</span>
+            </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-            {allClonesInRank.map((cloneNode) => (
+          {isCloneStatusPopupOpen && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 sm:p-5"
+              onClick={() => setIsCloneStatusPopupOpen(false)}
+            >
               <div
-                key={cloneNode.id}
-                className="bg-slate-950/90 border border-emerald-500/40 rounded-xl p-2.5 flex items-center justify-between gap-2 text-xs h-auto"
+                className="w-full max-w-3xl rounded-2xl bg-slate-950 border border-emerald-500/40 shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+                onClick={(e) => e.stopPropagation()}
               >
-                <div className="space-y-0.5">
-                  <div className="font-mono font-bold text-emerald-300 flex items-center gap-1.5 flex-wrap">
-                    <span className="text-amber-400">#{cloneNode.originMainId}</span>
-                    <span>#{cloneNode.id}</span>
-                    <span>#{cloneNode.subCloneDepth}</span>
-                    <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-200 text-[10px]">
-                      รอบ {cloneNode.cloneRound}
+                {/* Modal Header */}
+                <div className="px-4 py-3.5 bg-emerald-950/50 border-b border-emerald-500/30 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-xs sm:text-sm font-bold text-emerald-300">
+                    <Dna className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>
+                      สรุปสถานะรหัสโคลนนิ่ง (Rebirth Clone Status) ใน Rank {selectedRank}: พบ{' '}
+                      {allClonesInRank.length} รหัสโคลน
                     </span>
                   </div>
-                  <div className="text-[11px] text-slate-300">
-                    รหัสหลัก:{' '}
-                    <span className="font-mono font-bold text-amber-300">
-                      #{cloneNode.originMainId}
-                    </span>{' '}
-                    • อัพไลน์ #{cloneNode.parentId} ({cloneNode.isLeft ? 'ซ้าย' : 'ขวา'})
+                  <button
+                    type="button"
+                    onClick={() => setIsCloneStatusPopupOpen(false)}
+                    className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-semibold cursor-pointer shrink-0"
+                  >
+                    ✕ ปิดหน้าต่าง
+                  </button>
+                </div>
+
+                {/* Modal Body */}
+                <div className="p-3.5 sm:p-4 overflow-y-auto space-y-2.5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {allClonesInRank.map((cloneNode) => (
+                      <div
+                        key={cloneNode.id}
+                        className="bg-slate-900/90 border border-emerald-500/40 rounded-xl p-3 flex items-center justify-between gap-2 text-xs"
+                      >
+                        <div className="space-y-1">
+                          <div className="font-mono font-bold text-emerald-300 flex items-center gap-1.5 flex-wrap">
+                            <span className="text-amber-400">#{cloneNode.originMainId}</span>
+                            <span>#{cloneNode.id}</span>
+                            <span>#{cloneNode.subCloneDepth}</span>
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-200 text-[10px]">
+                              รอบ {cloneNode.cloneRound}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-300">
+                            รหัสหลัก:{' '}
+                            <span className="font-mono font-bold text-amber-300">
+                              #{cloneNode.originMainId}
+                            </span>{' '}
+                            • อัพไลน์ #{cloneNode.parentId} ({cloneNode.isLeft ? 'ซ้าย' : 'ขวา'})
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigateToNode(cloneNode.id);
+                              setIsCloneStatusPopupOpen(false);
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-200 font-mono text-[10px] border border-emerald-500/40 cursor-pointer"
+                          >
+                            ดู #{cloneNode.id}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigateToNode(cloneNode.originMainId);
+                              setIsCloneStatusPopupOpen(false);
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 font-mono text-[10px] border border-slate-700 cursor-pointer"
+                          >
+                            รหัสหลัก #{cloneNode.originMainId}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1 shrink-0">
+                {/* Modal Footer */}
+                <div className="px-4 py-2.5 bg-slate-900/80 border-t border-slate-800 flex items-center justify-end text-[11px] text-slate-400">
                   <button
                     type="button"
-                    onClick={() => navigateToNode(cloneNode.id)}
-                    className="px-2 py-1 rounded-lg bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-200 font-mono text-[10px] border border-emerald-500/40 cursor-pointer"
+                    onClick={() => setIsCloneStatusPopupOpen(false)}
+                    className="px-3.5 py-1 rounded-lg bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-200 border border-emerald-500/40 font-semibold cursor-pointer"
                   >
-                    ดู #{cloneNode.id}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => navigateToNode(cloneNode.originMainId)}
-                    className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 font-mono text-[10px] border border-slate-700 cursor-pointer"
-                  >
-                    รหัสหลัก #{cloneNode.originMainId}
+                    ตกลง
                   </button>
                 </div>
               </div>
-            ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* 3b. Rank 2-27 Single-Node On-Chain Info Strip */}
+      {selectedRank >= 2 && totalNodesInRank <= 1 && viewMode === 'onchain' && (
+        <div className="rounded-2xl bg-indigo-950/35 border border-indigo-500/35 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+          <div className="text-indigo-200 flex items-center gap-2 flex-wrap">
+            <span className="px-2 py-0.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-amber-300 font-mono font-bold">
+              Rank {selectedRank} ({RANK_PRICES_USDT[selectedRank - 1]} USDT)
+            </span>
+            <span>
+              <strong>Root Node #1</strong> ประจำผัง Rank {selectedRank}
+            </span>
           </div>
+          <button
+            type="button"
+            onClick={() => {
+              setViewMode('demoCloneTree');
+              setFocusRootId(1);
+              setNavigationHistory([1]);
+            }}
+            className="px-3 py-1.5 rounded-xl bg-purple-600/80 hover:bg-purple-500 text-white font-semibold text-xs border border-purple-400/40 transition cursor-pointer shrink-0"
+          >
+            👁️ ดูผังจำลอง Rank {selectedRank}
+          </button>
         </div>
       )}
 
@@ -2256,11 +2681,7 @@ export const MatrixTreeVisualizer: React.FC<MatrixTreeVisualizerProps> = ({
             className="relative inline-flex flex-col items-center h-auto w-max px-2 sm:px-4 py-3"
           >
             {/* Dynamic SVG Curved Connector Lines Overlay */}
-            <svg
-              className="absolute inset-0 pointer-events-none z-0 overflow-visible"
-              width={treeDimensions.width || '100%'}
-              height={treeDimensions.height || '100%'}
-            >
+            <svg className="absolute inset-0 w-full h-full pointer-events-none z-0 overflow-visible">
               {connectorLines.map((line) => {
                 const midY = line.y1 + (line.y2 - line.y1) * 0.5;
                 const d = `M ${line.x1} ${line.y1} C ${line.x1} ${midY}, ${line.x2} ${midY}, ${line.x2} ${line.y2}`;

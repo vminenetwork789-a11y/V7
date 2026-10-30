@@ -326,18 +326,29 @@ async function createMatrixNodeData(params: {
 
 async function getUserProfileWithVaults(owner: string) {
   const key = owner.toLowerCase();
-  let user = inMemoryDB.users.get(key);
-
-  if (!user) {
-    user = await registerUserAccount(owner, undefined, 1);
-  }
+  const user = inMemoryDB.users.get(key);
 
   const nodes = Array.from(inMemoryDB.nodes.values())
     .filter((n) => n.owner.toLowerCase() === key)
     .sort((a, b) => Number(a.id) - Number(b.id));
 
+  if (!user && nodes.length === 0) {
+    return {
+      id: `unregistered-${key}`,
+      owner,
+      sponsor: ethers.ZeroAddress,
+      sponsorMainNodeId: '0',
+      currentMaxRank: 0,
+      createdAt: new Date().toISOString(),
+      vaults: [],
+      nodes: [],
+    };
+  }
+
+  const ensuredUser = user || (await registerUserAccount(owner, undefined, 1));
+
   return {
-    ...user,
+    ...ensuredUser,
     nodes,
   };
 }
@@ -1934,19 +1945,29 @@ async function startApp() {
       const usdtBalance = '0.00';
       const usdtAllowance = '0.00';
 
+      const hasNodes = (userProfileData?.nodes?.length ?? 0) > 0;
+      const mainNodes = (userProfileData?.nodes || []).filter((n) => !n.isClone).map((n) => String(n.id));
+      const cloneNodes = (userProfileData?.nodes || []).filter((n) => n.isClone).map((n) => String(n.id));
+      const allNodes = (userProfileData?.nodes || []).map((n) => String(n.id));
+
       res.json({
         success: true,
         address,
         user: userProfileData,
         profile: {
-          isRegistered: (userProfileData?.nodes?.length ?? 0) > 0,
-          sponsor: userProfileData?.sponsor || '0x0000000000000000000000000000000000000000',
-          sponsorMainNodeId: userProfileData?.sponsorMainNodeId || '1',
-          currentMaxRank: userProfileData?.currentMaxRank || 1,
-          mainNodeIdRank1: userProfileData?.nodes?.[0]?.id || '1',
-          latestCloneIdRank1: userProfileData?.nodes?.filter((n) => n.isClone).pop()?.id || '0',
+          isRegistered: hasNodes,
+          sponsor: hasNodes
+            ? userProfileData?.sponsor || '0x0000000000000000000000000000000000000000'
+            : '0x0000000000000000000000000000000000000000',
+          sponsorMainNodeId: hasNodes ? userProfileData?.sponsorMainNodeId || '1' : '0',
+          currentMaxRank: hasNodes ? userProfileData?.currentMaxRank || 1 : 0,
+          mainNodeIdRank1: hasNodes ? mainNodes[0] || allNodes[0] || '0' : '0',
+          latestCloneIdRank1: hasNodes ? cloneNodes[cloneNodes.length - 1] || '0' : '0',
+          ownedMainIdsRank1: mainNodes,
+          ownedCloneIdsRank1: cloneNodes,
+          ownedAllIdsRank1: allNodes,
         },
-        vaults: userProfileData?.vaults || [],
+        vaults: hasNodes ? userProfileData?.vaults || [] : [],
         nodes: userProfileData?.nodes || [],
         usdtBalance,
         usdtAllowance,

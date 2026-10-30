@@ -60,17 +60,9 @@ export const UpgradeRankSection: React.FC<UpgradeRankSectionProps> = ({
         <div>
           <div className="flex items-center gap-2">
             <span className="text-lg font-bold text-indigo-400">
-              {language === 'th' ? '🚀 อัปเกรดแรงค์ 2 - 27 (upgradeRank)' : '🚀 Rank Progression (Rank 2 - 27)'}
-            </span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 font-mono">
-              Step-by-Step + Vault Credit
+              {language === 'th' ? '🚀 อัปเกรดแรงค์ 2 - 27' : '🚀 Rank Progression (Rank 2 - 27)'}
             </span>
           </div>
-          <p className="text-xs text-slate-400 mt-1">
-            {language === 'th'
-              ? 'อัปเกรดเรียงตามลำดับขั้น (currentRank + 1) ระบบหักยอดสะสมจาก getAccumulatedVault อัตโนมัติ'
-              : 'Step-by-step upgrade (currentRank + 1) with automatic deduction from getAccumulatedVault'}
-          </p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -161,20 +153,13 @@ export const UpgradeRankSection: React.FC<UpgradeRankSectionProps> = ({
       {targetRankDef && (
         <div className="bg-slate-950/90 border border-slate-800/90 rounded-xl p-4 space-y-3">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <Zap className="w-4 h-4 text-amber-400" />
-                <span className="text-sm font-bold text-slate-200">
-                  {language === 'th'
-                    ? `อัปเกรดสู่ Rank ${targetRankDef.rank} (${targetRankDef.priceUSDT.toLocaleString()} USDT)`
-                    : `Upgrade to Rank ${targetRankDef.rank} (${targetRankDef.priceUSDT.toLocaleString()} USDT)`}
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400">
+            <div className="flex items-center gap-2">
+              <Zap className="w-4 h-4 text-amber-400" />
+              <span className="text-sm font-bold text-slate-200">
                 {language === 'th'
-                  ? `กระจายรางวัล: Direct ${(targetRankDef.priceUSDT * 0.3).toFixed(2)} | Level 15 ชั้น ${(targetRankDef.priceUSDT * 0.3).toFixed(2)} | Vault ${(targetRankDef.priceUSDT * 0.35).toFixed(2)} USDT`
-                  : `Rewards: Direct ${(targetRankDef.priceUSDT * 0.3).toFixed(2)} | 15-Level ${(targetRankDef.priceUSDT * 0.3).toFixed(2)} | Vault ${(targetRankDef.priceUSDT * 0.35).toFixed(2)} USDT`}
-              </p>
+                  ? `อัปเกรดสู่ Rank ${targetRankDef.rank} (${targetRankDef.priceUSDT.toLocaleString()} USDT)`
+                  : `Upgrade to Rank ${targetRankDef.rank} (${targetRankDef.priceUSDT.toLocaleString()} USDT)`}
+              </span>
             </div>
 
             <button
@@ -295,48 +280,12 @@ export const UpgradeRankSection: React.FC<UpgradeRankSectionProps> = ({
                   </div>
                 </div>
 
-                {/* Collapsible Info Panel explaining New Auto ID & Auto Extra ID placement conditions separated from Clone */}
+                {/* Core Rule Only */}
                 {showAutoIdInfo && (
-                  <div className="bg-slate-950/80 border border-slate-800 p-3.5 rounded-xl text-xs space-y-2 text-slate-300 animate-fadeIn">
-                    <div className="font-bold text-amber-400 flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5" />
-                      <span>
-                        {language === 'th'
-                          ? '📌 เงื่อนไขการวางตำแหน่ง New Auto ID และ Auto Extra ID (แยกออกจากโคลนนิ่ง):'
-                          : '📌 Placement Rules for New Auto ID & Auto Extra ID (Separated from Clone):'}
-                      </span>
-                    </div>
-                    <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-200 font-semibold">
-                      {language === 'th'
-                        ? '🎯 เงื่อนไข New Auto ID และ Auto Extra ID: จับคู่โคลนตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId) เท่านั้น!'
-                        : '🎯 New Auto ID & Auto Extra ID Rule: Match clones strictly by Origin Main ID (originMainId === sponsorNodeId) ONLY!'}
-                    </div>
-                    <ul className="space-y-1 text-[11px] text-slate-300 pl-3 list-disc marker:text-cyan-400">
-                      <li>
-                        <strong>{language === 'th' ? 'ขั้นตอนที่ 1 (ติดตัวรหัสหลักต้นสังกัด):' : 'Step 1 (Direct Origin Main ID):'}</strong>{' '}
-                        {language === 'th'
-                          ? 'ตรวจสอบช่องว่างติดตัวรหัสหลักต้นสังกัด (#sponsorNodeId) ซ้ายว่างลงซ้าย ขวาว่างลงขวา'
-                          : 'Check direct slots under Origin Main ID (#sponsorNodeId): Left first, then Right.'}
-                      </li>
-                      <li>
-                        <strong>{language === 'th' ? 'ขั้นตอนที่ 2 (จับคู่โคลนตามรหัสหลักต้นสังกัดเท่านั้น):' : 'Step 2 (Match Clones by Origin Main ID Only):'}</strong>{' '}
-                        {language === 'th'
-                          ? 'หากรหัสหลักเต็มทั้ง 2 ข้าง ระบบจะค้นหาเฉพาะโคลนนิ่งที่มีรหัสหลักต้นสังกัดตรงกัน (originMainId === sponsorNodeId เท่านั้น) ซ้ายก่อนขวา จะไม่ข้ามไปโคลนของรหัสหลักอื่นในกระเป๋าเดียวกันเด็ดขาด'
-                          : 'If Main ID is full, matches ONLY clones where originMainId === sponsorNodeId (Left then Right). Never crosses over to clones of other Main IDs in the same wallet.'}
-                      </li>
-                      <li>
-                        <strong>{language === 'th' ? 'ขั้นตอนที่ 3 (กรณีเต็มทั้งหมด):' : 'Step 3 (Subtree BFS Fallback):'}</strong>{' '}
-                        {language === 'th'
-                          ? 'หากรหัสหลักและโคลนในสังกัดเต็มหมด จะวางในช่องว่างที่ตื้นที่สุด (BFS ซ้ายไปขวา) ใต้สายงานรหัสหลักต้นสังกัดนั้น'
-                          : 'If Main ID and all its clones are full, places in the shallowest vacant slot (BFS) under that Origin Main ID.'}
-                      </li>
-                      <li>
-                        <strong>{language === 'th' ? 'แหล่งเงินทุนแยกอิสระรายรหัสหลัก:' : 'Segregated Vault per Main ID:'}</strong>{' '}
-                        {language === 'th'
-                          ? `New Auto ID ใช้กระปุก Vault 1-4 (ครบ 5 USDT) และ Auto Extra ID ใช้กระปุก Vault 4-27 (Rank ${targetExtraRank} = ${targetExtraPrice} USDT) โดยไม่หัก USDT ส่วนตัวในกระเป๋า`
-                          : `New Auto ID uses Vault 1-4 (5 USDT) and Auto Extra ID uses Vault 4-27 (Rank ${targetExtraRank} = ${targetExtraPrice} USDT) without deducting wallet USDT.`}
-                      </li>
-                    </ul>
+                  <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-200 font-semibold">
+                    {language === 'th'
+                      ? '🎯 เงื่อนไข New Auto ID และ Auto Extra ID: จับคู่โคลนตามรหัสหลักต้นสังกัด (originMainId === sponsorNodeId) เท่านั้น'
+                      : '🎯 New Auto ID & Auto Extra ID Rule: Match clones strictly by Origin Main ID (originMainId === sponsorNodeId) ONLY'}
                   </div>
                 )}
               </div>
